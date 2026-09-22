@@ -3,6 +3,7 @@ package com.wmods.wppenhacer.xposed.utils
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Pair
+import androidx.core.content.edit
 import de.robv.android.xposed.XposedHelpers
 import java.lang.reflect.Constructor
 import java.lang.reflect.Field
@@ -159,7 +160,7 @@ object ReflectionUtils {
     @JvmStatic
     fun getFieldByExtendType(cls: Class<*>?, className: String?): Field? {
         if (cls == null || className == null) return null
-        return getFieldByExtendType(cls, findClass(className, cls.classLoader))
+        return getFieldByExtendType(cls, findClass(className, cls.classLoader!!))
     }
 
     @JvmStatic
@@ -176,14 +177,18 @@ object ReflectionUtils {
             try {
                 return cls.getField(cachedFieldName)
             } catch (_: NoSuchFieldException) {
-                cachePrefs?.edit()?.remove(cacheKey)?.commit()
+                (cachePrefs as SharedPreferences).edit(commit = true){
+                    remove(cacheKey)
+                }
             }
         }
 
         val field = Arrays.stream(cls.fields).filter { f: Field -> type.isAssignableFrom(f.type) }.findFirst().orElse(null)
 
         if (field != null && field.declaringClass == cls) {
-            cachePrefs?.edit()?.putString(cacheKey, field.name)?.commit()
+            (cachePrefs as SharedPreferences).edit(commit = true){
+                putString(cacheKey, field.name)
+            }
         }
 
         return field
@@ -192,7 +197,7 @@ object ReflectionUtils {
     @JvmStatic
     fun getFieldByType(cls: Class<*>?, className: String?): Field? {
         if (cls == null || className == null) return null
-        return getFieldByType(cls, findClass(className, cls.classLoader))
+        return getFieldByType(cls, findClass(className, cls.classLoader!!))
     }
 
 
@@ -270,28 +275,37 @@ object ReflectionUtils {
         }
     }
 
-    @JvmStatic
     fun findIndexOfType(args: Array<out Any?>, type: Class<*>): Int {
+        val targetType = when (type) {
+            java.lang.Float.TYPE -> java.lang.Float::class.java
+            java.lang.Integer.TYPE -> java.lang.Integer::class.java
+            java.lang.Long.TYPE -> java.lang.Long::class.java
+            java.lang.Double.TYPE -> java.lang.Double::class.java
+            java.lang.Boolean.TYPE -> java.lang.Boolean::class.java
+            java.lang.Byte.TYPE -> java.lang.Byte::class.java
+            java.lang.Character.TYPE -> java.lang.Character::class.java
+            java.lang.Short.TYPE -> java.lang.Short::class.java
+            else -> type
+        }
         for (i in args.indices) {
             val arg = args[i] ?: continue
             if (arg is Class<*>) {
-                if (type.isAssignableFrom(arg)) return i
+                if (targetType.isAssignableFrom(arg) || type.isAssignableFrom(arg)) return i
                 continue
             }
-            if (type.isInstance(arg)) return i
+            if (targetType.isInstance(arg) || type.isInstance(arg)) return i
         }
         return -1
     }
 
     @JvmStatic
-    fun <T> findInstancesOfType(args: Array<out Any?>, type: Class<T>): List<Pair<Int, T>> {
-        val result = ArrayList<Pair<Int, T>>()
+    fun <T> findInstancesOfType(args: Array<Any?>, type: Class<T>): List<Pair<Int, T>> {
+        val result = mutableListOf<Pair<Int, T>>()
         for (i in args.indices) {
             val arg = args[i]
             if (arg == null || arg is Class<*>) continue
             if (type.isInstance(arg)) {
-                @Suppress("UNCHECKED_CAST")
-                result.add(Pair(i, type.cast(arg)))
+                result.add(Pair(i, type.cast(arg)!!))
             }
         }
         return result
@@ -311,18 +325,15 @@ object ReflectionUtils {
     }
 
     @JvmStatic
-    fun <T> getArg(args: Array<out Any?>, typeClass: Class<T>, index: Int): T? {
+    fun <T> getArg(args: Array<Any?>, typeClass: Class<T>, i: Int): T? {
         val list = findInstancesOfType(args, typeClass)
-        if (list.isEmpty()) return null
-        if (index == -1) return list[list.size - 1].second
-        if (index < list.size) return list[index].second
-        return null
+        return if (list.size <= i) null else list[i].second
     }
 
     @JvmStatic
     fun isCalledFromStrings(vararg fragments: String): Boolean {
         for (fragment in fragments) {
-            require(fragment != null && fragment.trim().isNotEmpty()) { "Stack trace fragments must not be blank." }
+            require(fragment.trim().isNotEmpty()) { "Stack trace fragments must not be blank." }
         }
 
         val trace = Throwable().stackTrace
@@ -348,6 +359,7 @@ object ReflectionUtils {
         if (aClass == null || s == null) return false
         try {
             var cls: Class<*>? = aClass
+            @Suppress("SENSELESS_COMPARISON")
             do {
                 if (cls!!.simpleName == s) return true
                 if (cls.name.startsWith("android.widget.") || cls.name.startsWith("android.view."))

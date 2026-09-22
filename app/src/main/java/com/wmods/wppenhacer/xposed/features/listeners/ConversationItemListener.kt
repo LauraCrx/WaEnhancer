@@ -16,7 +16,9 @@ import de.robv.android.xposed.XC_MethodHook
 import android.content.SharedPreferences 
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
+import java.lang.ref.WeakReference
 import java.util.WeakHashMap
+import java.util.concurrent.CopyOnWriteArraySet
 
 class ConversationItemListener(
     loader: ClassLoader,
@@ -33,7 +35,7 @@ class ConversationItemListener(
         private const val FIELD_BOUND_MESSAGE_ID = "conversation_item_bound_message_id"
 
         @JvmField
-        val conversationListeners = HashSet<OnConversationItemListener>()
+        val conversationListeners = CopyOnWriteArraySet<OnConversationItemListener>()
 
         var adapter: ListAdapter? = null
 
@@ -41,11 +43,30 @@ class ConversationItemListener(
         val listItems = WeakHashMap<View, BoundConversationItem>()
 
         private var hooked: XC_MethodHook.Unhook? = null
+        private var adapterActivity: WeakReference<Activity>? = null
+
+        @JvmStatic
+        fun unwrapBaseAdapter(adapter: ListAdapter?): BaseAdapter? {
+            var cur: Any? = adapter ?: return null
+            if (cur is HeaderViewListAdapter) {
+                cur = cur.wrappedAdapter
+            }
+            if (cur is BaseAdapter) {
+                return cur
+            }
+            return cur?.javaClass?.declaredFields?.firstNotNullOfOrNull { field ->
+                if (BaseAdapter::class.java.isAssignableFrom(field.type)) {
+                    field.isAccessible = true
+                    field.get(cur) as? BaseAdapter
+                } else null
+            }
+        }
 
         @JvmStatic
         fun notifyDataSetChanged() {
             Handler(Looper.getMainLooper()).post {
-                (adapter as? BaseAdapter)?.notifyDataSetChanged()
+                val baseAdapter = unwrapBaseAdapter(adapter)
+                baseAdapter?.notifyDataSetChanged()
             }
         }
 
@@ -72,8 +93,13 @@ class ConversationItemListener(
     @Throws(Throwable::class)
     override fun doHook() {
         WppCore.addListenerActivity { activity, type ->
-            if (activity.javaClass.simpleName == "Conversation" && type == WppCore.ActivityChangeState.ChangeType.DESTROYED)
+            if (adapterActivity?.get() === activity && type == WppCore.ActivityChangeState.ChangeType.DESTROYED) {
                 hooked?.unhook()
+                hooked = null
+                adapter = null
+                adapterActivity = null
+                listItems.clear()
+            }
         }
 
         XposedHelpers.findAndHookMethod(
@@ -83,8 +109,9 @@ class ConversationItemListener(
             object : XC_MethodHook() {
                 @Throws(Throwable::class)
                 override fun beforeHookedMethod(param: MethodHookParam) {
-                    val currentActivity = WppCore.getCurrentActivity()
-                    if (currentActivity == null || currentActivity.javaClass.simpleName != "Conversation") {
+                    if (conversationListeners.isEmpty()) return
+                    val currentActivity = WppCore.getCurrentConversation()
+                    if (currentActivity == null) {
                         return
                     }
 
@@ -103,6 +130,7 @@ class ConversationItemListener(
                     }
 
                     adapter = currentAdapter
+                    adapterActivity = WeakReference(currentActivity)
 
                     for (listener in conversationListeners) {
                         listener.onAttachAdapter(adapter)
@@ -110,8 +138,8 @@ class ConversationItemListener(
 
                     hooked?.unhook()
 
-                    val method = adapter!!.javaClass.getDeclaredMethod(
-                        "getView",
+                    val method = XposedHelpers.findMethodBestMatch(
+                        adapter!!.javaClass, "getView",
                         Int::class.javaPrimitiveType,
                         View::class.java,
                         ViewGroup::class.java
@@ -120,14 +148,17 @@ class ConversationItemListener(
                     hooked = XposedBridge.hookMethod(method, object : XC_MethodHook() {
                         @Throws(Throwable::class)
                         override fun afterHookedMethod(param: MethodHookParam) {
-                            if (param.thisObject !== adapter) return
+                            if (conversationListeners.isEmpty()) return
+                            val activeAdapter = adapter ?: return
+                            if (param.thisObject !== activeAdapter) return
 
                             val position = param.args[0] as Int
                             val convertView = param.args[1] as? View
                             val viewGroup = param.result as? ViewGroup ?: return
 
-                            val fMessageObj = adapter!!.getItem(position) ?: return
+                            val fMessageObj = activeAdapter.getItem(position) ?: return
 
+                            if (!FMessageWpp.TYPE.isInstance(fMessageObj)) return
                             val fMessage = FMessageWpp(fMessageObj)
 
                             bindViewToMessage(viewGroup, fMessage)

@@ -24,21 +24,24 @@ class LockedChatsEnhancer(classLoader: ClassLoader, preferences:SharedPreference
 
         val jidNotifications = loadNotificationMethod(classLoader)
         val lockedChatsMethod = loadLockedChatsMethod(classLoader)
+        val suppressLockedChats = ThreadLocal.withInitial { false }
 
         XposedBridge.hookMethod(jidNotifications, object : XC_MethodHook() {
 
             override fun beforeHookedMethod(param: MethodHookParam) {
-                val unhook = XposedBridge.hookMethod(lockedChatsMethod, object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        param.setResult(ArrayList<Any?>())
-                    }
-                })
-                param.setObjectExtra("hook", unhook)
+                suppressLockedChats.set(true)
             }
 
             override fun afterHookedMethod(param: MethodHookParam) {
-                val unhook = param.getObjectExtra("hook") as Unhook?
-                unhook?.unhook()
+                suppressLockedChats.remove()
+            }
+        })
+
+        XposedBridge.hookMethod(lockedChatsMethod, object : XC_MethodHook() {
+            override fun beforeHookedMethod(param: MethodHookParam) {
+                if (suppressLockedChats.get() == true) {
+                    param.setResult(ArrayList<Any?>())
+                }
             }
         })
 
@@ -58,18 +61,19 @@ class LockedChatsEnhancer(classLoader: ClassLoader, preferences:SharedPreference
         XposedBridge.hookMethod(loadedContacts, object : XC_MethodHook() {
 
             override fun beforeHookedMethod(param: MethodHookParam) {
-                val list = XposedHelpers.getObjectField(param.args[0], "A01") as MutableList<*>
-                val lockedChats = lockedChatsFields[1]!!.get(chatCache) as HashSet<*>?
+                val list = XposedHelpers.getObjectField(param.args[0], "A01") as? List<*>? ?: return
+                val lockedChats = lockedChatsFields[1].get(chatCache) as HashSet<*>?
                 val lockedNumbers = lockedChats!!.stream()
                     .map<String?> { userjid: Any? -> UserJid(userjid).phoneNumber }.collect(
                         Collectors.toList()
                     )
-                list.removeIf { item: Any? ->
-                    if (!WaContactWpp.TYPE.isInstance(item)) return@removeIf false
+                val filteredList = list.filter { item: Any? ->
+                    if (!WaContactWpp.TYPE.isInstance(item)) return@filter false
                     val waContact = WaContactWpp(item)
                     val phoneNumber = waContact.userJid.phoneNumber
                     lockedNumbers.contains(phoneNumber)
                 }
+                XposedHelpers.setObjectField(param.args[0], "A01", filteredList)
             }
         })
     }

@@ -4,7 +4,6 @@ import android.annotation.SuppressLint
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.text.TextUtils
-import androidx.core.database.sqlite.transaction
 import com.wmods.wppenhacer.xposed.utils.Utils
 import de.robv.android.xposed.XposedBridge
 import java.io.File
@@ -15,12 +14,13 @@ class MessageStore private constructor() {
     private var sqLiteDatabase: SQLiteDatabase? = null
 
     init {
-        val dbFile = File(Utils.application.filesDir.parentFile, "/databases/msgstore.db")
+        val dataDir = Utils.getAccountDataDir()
+        val dbFile = File(dataDir, "/databases/msgstore.db")
         if (dbFile.exists()) {
             sqLiteDatabase = SQLiteDatabase.openDatabase(
                 dbFile.absolutePath,
                 null,
-                SQLiteDatabase.OPEN_READWRITE
+                SQLiteDatabase.OPEN_READONLY
             )
         }
     }
@@ -172,22 +172,53 @@ class MessageStore private constructor() {
     }
 
     @Synchronized
-    fun executeSQL(sql: String) {
-        try {
-            sqLiteDatabase?.execSQL(sql)
-        } catch (e: Exception) {
-            XposedBridge.log(e)
+    fun executeWritableSQL(sql: String, maxRetries: Int = 3, retryDelayMs: Long = 500L) {
+        val dataDir = Utils.getAccountDataDir()
+        val dbFile = File(dataDir, "/databases/msgstore.db")
+        if (!dbFile.exists()) return
+
+        var retries = 0
+        while (retries < maxRetries) {
+            var writeDb: SQLiteDatabase? = null
+            try {
+                writeDb = SQLiteDatabase.openDatabase(
+                    dbFile.absolutePath,
+                    null,
+                    SQLiteDatabase.OPEN_READWRITE
+                )
+                try {
+                    writeDb.rawQuery("PRAGMA busy_timeout = 3000;", null).close()
+                } catch (ignored: Exception) {}
+
+                writeDb.execSQL(sql)
+                return
+            } catch (e: Exception) {
+                if (e is android.database.sqlite.SQLiteDatabaseLockedException ||
+                    e is android.database.sqlite.SQLiteTableLockedException
+                ) {
+                    retries++
+                    if (retries >= maxRetries) {
+                        XposedBridge.log(e)
+                    } else {
+                        try {
+                            Thread.sleep(retryDelayMs * retries)
+                        } catch (ignored: InterruptedException) {}
+                    }
+                } else {
+                    XposedBridge.log(e)
+                    return
+                }
+            } finally {
+                try {
+                    writeDb?.close()
+                } catch (ignored: Exception) {}
+            }
         }
     }
 
     fun storeMessageRead(messageId: String) {
-        val db = sqLiteDatabase ?: return
         XposedBridge.log("storeMessageRead: $messageId")
-        try {
-            db.execSQL("UPDATE message SET status = 1 WHERE key_id = \"$messageId\"")
-        } catch (e: Exception) {
-            XposedBridge.log(e)
-        }
+        executeWritableSQL("UPDATE message SET status = 1 WHERE key_id = \"$messageId\"")
     }
 
     fun isReadMessageStatus(messageId: String): Boolean {
@@ -256,12 +287,134 @@ class MessageStore private constructor() {
         return null
     }
 
+    fun deleteStatusByMessageKey(messageKey: String?, callback: ((Boolean) -> Unit)? = null) {
+        Utils.databaseExecutor.execute {
+            val result = deleteStatusByMessageKeySync(messageKey)
+            callback?.invoke(result)
+        }
+    }
+
     @Synchronized
-    fun deleteStatusByMessageKey(messageKey: String?): Boolean {
-        val db = sqLiteDatabase
-        if (db == null || messageKey.isNullOrEmpty()) {
+    private fun deleteStatusByMessageKeySync(messageKey: String?): Boolean {
+        if (messageKey.isNullOrEmpty()) {
             return false
         }
+        val dbFile = File(Utils.application.filesDir.parentFile, "/databases/status.db")
+        val statusDbInstance: SQLiteDatabase? = if (dbFile.exists()) {
+            try {
+                SQLiteDatabase.openDatabase(
+                    dbFile.absolutePath,
+                    null,
+                    SQLiteDatabase.OPEN_READWRITE
+                )
+            } catch (e: Exception) {
+                XposedBridge.log(e)
+                null
+            }
+        } else {
+            null
+        }
+
+        if (statusDbInstance != null && statusDbInstance.isOpen) {
+            try {
+                var statusRowId: Long? = null
+                var mediaFilePath: String? = null
+
+                try {
+                    statusDbInstance.query(
+                        "status",
+                        arrayOf("row_id"),
+                        "uuid=?",
+                        arrayOf(messageKey),
+                        null,
+                        null,
+                        null
+                    ).use { cursor ->
+                        if (cursor.moveToFirst()) {
+                            statusRowId = cursor.getLong(0)
+                        }
+                    }
+                } catch (e: Exception) {
+                    XposedBridge.log(e)
+                }
+
+                if (statusRowId != null) {
+                    try {
+                        statusDbInstance.rawQuery(
+                            "SELECT st.thumbnail_path, mc.file_path " +
+                                    "FROM status_thumbnail st " +
+                                    "LEFT JOIN media_content mc ON st.media_content_row_id = mc.row_id " +
+                                    "WHERE st.status_row_id = ? LIMIT 1",
+                            arrayOf(statusRowId.toString())
+                        ).use { cursor ->
+                            if (cursor.moveToFirst()) {
+                                val thumbPath = if (cursor.isNull(0)) null else cursor.getString(0)
+                                val mcPath = if (cursor.isNull(1)) null else cursor.getString(1)
+                                mediaFilePath = when {
+                                    !thumbPath.isNullOrEmpty() -> thumbPath
+                                    !mcPath.isNullOrEmpty() -> mcPath
+                                    else -> null
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        XposedBridge.log(e)
+                    }
+
+                    if (mediaFilePath.isNullOrEmpty()) {
+                        try {
+                            statusDbInstance.rawQuery(
+                                "SELECT mc.file_path " +
+                                        "FROM status_media_link sml " +
+                                        "JOIN media_content mc ON sml.media_content_row_id = mc.row_id " +
+                                        "WHERE sml.status_row_id = ? LIMIT 1",
+                                arrayOf(statusRowId.toString())
+                            ).use { cursor ->
+                                if (cursor.moveToFirst()) {
+                                    mediaFilePath = if (cursor.isNull(0)) null else cursor.getString(0)
+                                }
+                            }
+                        } catch (e: Exception) {
+                            XposedBridge.log(e)
+                        }
+                    }
+
+                    var deleted = false
+                    try {
+                        deleted = statusDbInstance.delete("status", "row_id=?", arrayOf(statusRowId.toString())) > 0
+                    } catch (e: Exception) {
+                        XposedBridge.log(e)
+                    }
+
+                    if (deleted) {
+                        deleteStatusMediaFile(mediaFilePath)
+                        return true
+                    }
+                }
+            } finally {
+                try {
+                    statusDbInstance.close()
+                } catch (e: Exception) {
+                    XposedBridge.log(e)
+                }
+            }
+        }
+
+        val msgStoreFile = File(Utils.application.filesDir.parentFile, "/databases/msgstore.db")
+        val writeDb = if (msgStoreFile.exists()) {
+            try {
+                SQLiteDatabase.openDatabase(
+                    msgStoreFile.absolutePath,
+                    null,
+                    SQLiteDatabase.OPEN_READWRITE
+                )
+            } catch (e: Exception) {
+                XposedBridge.log(e)
+                null
+            }
+        } else {
+            null
+        } ?: return false
 
         var messageRowId: Long? = null
         var senderJidRowId: Long? = null
@@ -269,53 +422,57 @@ class MessageStore private constructor() {
         var mediaFilePath: String? = null
         var deleted = false
 
-        db.transaction {
+        try {
             try {
-                try {
-                    rawQuery(
-                        "SELECT _id, sender_jid_row_id, chat_row_id " +
-                                "FROM message " +
-                                "WHERE key_id=? AND from_me=0 " +
-                                "ORDER BY _id DESC LIMIT 1",
-                        arrayOf(messageKey)
-                    ).use { cursor ->
-                        if (cursor.moveToFirst()) {
-                            messageRowId = if (cursor.isNull(0)) null else cursor.getLong(0)
-                            senderJidRowId = if (cursor.isNull(1)) null else cursor.getLong(1)
-                            chatRowId = if (cursor.isNull(2)) null else cursor.getLong(2)
-                        }
+                writeDb.rawQuery(
+                    "SELECT _id, sender_jid_row_id, chat_row_id " +
+                            "FROM message " +
+                            "WHERE key_id=? AND from_me=0 " +
+                            "ORDER BY _id DESC LIMIT 1",
+                    arrayOf(messageKey)
+                ).use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        messageRowId = if (cursor.isNull(0)) null else cursor.getLong(0)
+                        senderJidRowId = if (cursor.isNull(1)) null else cursor.getLong(1)
+                        chatRowId = if (cursor.isNull(2)) null else cursor.getLong(2)
                     }
-                } catch (e: Exception) {
-                    XposedBridge.log(e)
                 }
+            } catch (e: Exception) {
+                XposedBridge.log(e)
+            }
 
-                if (messageRowId == null || senderJidRowId == null || chatRowId == null) {
-                    return false
-                }
+            if (messageRowId == null || senderJidRowId == null || chatRowId == null) {
+                return false
+            }
 
-                try {
-                    rawQuery(
-                        "SELECT file_path FROM message_media WHERE message_row_id=? LIMIT 1",
-                        arrayOf(messageRowId.toString())
-                    ).use { mediaCursor ->
-                        if (mediaCursor.moveToFirst()) {
-                            mediaFilePath = mediaCursor.getString(0)
-                        }
+            try {
+                writeDb.rawQuery(
+                    "SELECT file_path FROM message_media WHERE message_row_id=? LIMIT 1",
+                    arrayOf(messageRowId.toString())
+                ).use { mediaCursor ->
+                    if (mediaCursor.moveToFirst()) {
+                        mediaFilePath = mediaCursor.getString(0)
                     }
-                } catch (e: Exception) {
-                    XposedBridge.log(e)
                 }
+            } catch (e: Exception) {
+                XposedBridge.log(e)
+            }
 
-                deleted = delete("message", "_id=?", arrayOf(messageRowId.toString())) > 0
-                if (!deleted) {
-                    return false
-                }
-
-                refreshStatusRow(senderJidRowId!!, chatRowId!!)
+            try {
+                deleted = writeDb.delete("message", "_id=?", arrayOf(messageRowId.toString())) > 0
             } catch (e: Exception) {
                 XposedBridge.log(e)
                 deleted = false
-            } finally {
+            }
+
+            if (deleted) {
+                refreshStatusRow(writeDb, senderJidRowId!!, chatRowId!!)
+            }
+        } finally {
+            try {
+                writeDb.close()
+            } catch (e: Exception) {
+                XposedBridge.log(e)
             }
         }
 
@@ -326,8 +483,7 @@ class MessageStore private constructor() {
         return deleted
     }
 
-    private fun refreshStatusRow(senderJidRowId: Long, chatRowId: Long) {
-        val db = sqLiteDatabase ?: return
+    private fun refreshStatusRow(db: SQLiteDatabase, senderJidRowId: Long, chatRowId: Long) {
         var latestMessageId: Long = -1
         var latestTimestamp: Long = 0
         var totalCount = 0

@@ -3,7 +3,9 @@ package com.wmods.wppenhacer.xposed.features.customization
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
+import android.os.SystemClock
 import android.text.TextUtils
+import android.util.LruCache
 import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
@@ -37,6 +39,11 @@ class ShowOnline(loader: ClassLoader, preferences:SharedPreferences) : Feature(l
     private var getStatusUser: Method? = null
     private var fieldTokenDBInstance: Field? = null
     private var tokenClass: Class<*>? = null
+    private data class CachedStatus(val status: String?, val expiresAt: Long)
+    private val statusCache = LruCache<String, CachedStatus>(128)
+    private val onlineStatusLabel by lazy {
+        UnobfuscatorCache.getInstance().getString("online")
+    }
 
     override fun doHook() {
         val showOnlineText = prefs.getBoolean("showonlinetext", false)
@@ -47,8 +54,8 @@ class ShowOnline(loader: ClassLoader, preferences:SharedPreferences) : Feature(l
         XposedBridge.hookAllConstructors(classViewHolder, object : XC_MethodHook() {
             @SuppressLint("ResourceType")
             override fun afterHookedMethod(param: MethodHookParam) {
-                val view = param.args[1] as View
-                val context = param.args[0] as Context
+                val view = param.args.filterIsInstance<View>().first()
+                val context = param.args.filterIsInstance<Context>().first()
                 var content = view.findViewById<LinearLayout>(Utils.getID("conversations_row_content", "id"))
                 if (content == null) {
                     content = view.findViewById(Utils.getID("row_content", "id"))
@@ -158,27 +165,46 @@ class ShowOnline(loader: ClassLoader, preferences:SharedPreferences) : Feature(l
             sendPresenceMethod!!.declaringClass, tcTokenMethod!!.declaringClass
         )
 
+        val tokenConstructor = tokenClass?.constructors?.firstOrNull()
+
         ContactItemListener.contactListeners.add(object : ContactItemListener.OnContactItemListener() {
             @SuppressLint("ResourceType")
             override fun onBind(waContact: WaContactWpp?, view: View?) {
                 try {
-                    val userJid = waContact!!.userJid
-                    if (userJid.isGroup) return
+                    val contact = waContact ?: return
+                    val userJid = contact.userJid
+                    if (userJid.isNull || userJid.isGroup) return
 
                     val csDot: ImageView? = if (showOnlineIcon) view?.findViewById(0x7FFF0001) else null
                     if (showOnlineIcon && csDot != null) {
                         csDot.visibility = View.INVISIBLE
                     }
                     val lastSeenText: TextView? = if (showOnlineText) view?.findViewById(0x7FFF0002) else null
+                    val cacheKey = userJid.phoneRawString
+                    val now = SystemClock.uptimeMillis()
+                    val cachedStatus = cacheKey?.let { statusCache.get(it) }
+                    if (cachedStatus != null && cachedStatus.expiresAt > now) {
+                        setStatus(cachedStatus.status, csDot, lastSeenText, onlineStatusLabel)
+                        return
+                    }
 
-                    val tokenDBInstance = fieldTokenDBInstance!!.get(mInstancePresence)
-                    val tokenData = ReflectionUtils.callMethod(tcTokenMethod, tokenDBInstance, userJid.userJid)
-                    val tokenObj = tokenClass!!.constructors[0].newInstance(
+                    val presence = mInstancePresence ?: return
+                    val tokenDBField = fieldTokenDBInstance ?: return
+                    val tcMethod = tcTokenMethod ?: return
+                    val statusMethod = getStatusUser ?: return
+                    val sendMethod = sendPresenceMethod ?: return
+
+                    val tokenDBInstance = tokenDBField.get(presence)
+                    val tokenData = ReflectionUtils.callMethod(tcMethod, tokenDBInstance, userJid.userJid)
+                    val tokenObj = tokenConstructor?.newInstance(
                         if (tokenData == null) null else XposedHelpers.getObjectField(tokenData, "A01")
                     )
-                    sendPresenceMethod!!.invoke(null, userJid.userJid, null, tokenObj, mInstancePresence)
-                    val status = ReflectionUtils.callMethod(getStatusUser, mStatusUser, waContact.getObject(), false) as String
-                    setStatus(status, csDot, lastSeenText)
+                    sendMethod.invoke(null, userJid.userJid, null, tokenObj, presence)
+                    val status = ReflectionUtils.callMethod(statusMethod, mStatusUser, contact.getObject(), false) as? String
+                    if (cacheKey != null) {
+                        statusCache.put(cacheKey, CachedStatus(status, now + STATUS_CACHE_TTL_MS))
+                    }
+                    setStatus(status, csDot, lastSeenText, onlineStatusLabel)
                 } catch (e: Exception) {
                     XposedBridge.log(e)
                 }
@@ -191,8 +217,15 @@ class ShowOnline(loader: ClassLoader, preferences:SharedPreferences) : Feature(l
     }
 
     companion object {
-        private fun setStatus(status: String?, csDot: ImageView?, lastSeenText: TextView?) {
-            if (!TextUtils.isEmpty(status) && status!!.trim { it <= ' ' } == UnobfuscatorCache.getInstance().getString("online")) {
+        private const val STATUS_CACHE_TTL_MS = 1000L
+
+        private fun setStatus(
+            status: String?,
+            csDot: ImageView?,
+            lastSeenText: TextView?,
+            onlineStatus: String
+        ) {
+            if (!TextUtils.isEmpty(status) && status!!.trim { it <= ' ' } == onlineStatus) {
                 if (csDot != null) {
                     csDot.visibility = View.VISIBLE
                 }
@@ -201,7 +234,7 @@ class ShowOnline(loader: ClassLoader, preferences:SharedPreferences) : Feature(l
             if (lastSeenText != null) {
                 if (!TextUtils.isEmpty(status)) {
                     lastSeenText.text = status
-                    if (UnobfuscatorCache.getInstance().getString("online") == status) {
+                    if (onlineStatus == status) {
                         lastSeenText.setTextColor(Color.GREEN)
                     } else {
                         lastSeenText.setTextColor(0xffcac100.toInt())

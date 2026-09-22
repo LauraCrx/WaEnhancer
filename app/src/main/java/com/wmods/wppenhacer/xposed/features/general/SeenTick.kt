@@ -26,7 +26,7 @@ import com.wmods.wppenhacer.xposed.core.components.FMessageWpp
 import com.wmods.wppenhacer.xposed.core.components.StatusItemWpp
 import com.wmods.wppenhacer.xposed.core.db.MessageHistoryStore
 import com.wmods.wppenhacer.xposed.core.devkit.Unobfuscator
-import com.wmods.wppenhacer.xposed.features.listeners.MenuStatusListener
+import com.wmods.wppenhacer.xposed.features.providers.MenuStatusProvider
 import com.wmods.wppenhacer.xposed.utils.DebugUtils
 import com.wmods.wppenhacer.xposed.utils.DesignUtils
 import com.wmods.wppenhacer.xposed.utils.ReflectionUtils
@@ -309,12 +309,11 @@ class SeenTick(
                 }
             })
         } else {
-            MenuStatusListener.menuStatuses.add(object :
-                MenuStatusListener.OnMenuItemStatusListener() {
+            MenuStatusProvider.register(object : MenuStatusProvider.Provider {
 
                 override fun addMenu(
                     menu: Menu,
-                    statusData: MenuStatusListener.StatusData,
+                    statusData: MenuStatusProvider.StatusData,
                 ): MenuItem? {
                     if (menu.findItem(R.string.send_blue_tick) != null) return null
                     if (statusData.currentItem.isFromMe) return null
@@ -323,7 +322,7 @@ class SeenTick(
 
                 override fun onClick(
                     item: MenuItem,
-                    statusData: MenuStatusListener.StatusData
+                    statusData: MenuStatusProvider.StatusData
                 ) {
                     sendBlueTickStatus(listOf(statusData.currentItem))
                     Utils.showToast(
@@ -357,10 +356,10 @@ class SeenTick(
             }
         })
 
-        MenuStatusListener.menuStatuses.add(object : MenuStatusListener.OnMenuItemStatusListener() {
+        MenuStatusProvider.register(object : MenuStatusProvider.Provider {
             override fun addMenu(
                 menu: Menu,
-                statusData: MenuStatusListener.StatusData
+                statusData: MenuStatusProvider.StatusData
             ): MenuItem? {
                 if (menu.findItem(R.string.read_all_mark_as_read) != null) return null
                 if (statusData.currentItem.isFromMe) return null
@@ -374,7 +373,7 @@ class SeenTick(
 
             override fun onClick(
                 item: MenuItem,
-                statusData: MenuStatusListener.StatusData
+                statusData: MenuStatusProvider.StatusData
             ) {
                 val listStatus = statusData.getCurrentItemList()
                 listStatus.forEach { fStatus ->
@@ -413,21 +412,23 @@ class SeenTick(
                 if (ticktype == 1) item.setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
 
                 item.setOnMenuItemClickListener {
-                    val userJid = fMessage.key.remoteJid
-                    val messageID = fMessage.key.messageID
-                    MessageHistoryStore.getInstance().updateViewedMessage(
-                        userJid.phoneRawString,
-                        messageID,
-                        MessageHistoryStore.ReceiptType.PLAYED,
-                        true
-                    )
-                    MessageHistoryStore.getInstance().updateViewedMessage(
-                        userJid.phoneRawString,
-                        messageID,
-                        MessageHistoryStore.ReceiptType.READ,
-                        true
-                    )
-                    sendBlueTickMedia(fMessage)
+                    scope.launch(Dispatchers.IO) {
+                        val userJid = fMessage.key.remoteJid
+                        val messageID = fMessage.key.messageID
+                        MessageHistoryStore.getInstance().updateViewedMessage(
+                            userJid.phoneRawString,
+                            messageID,
+                            MessageHistoryStore.ReceiptType.PLAYED,
+                            true
+                        )
+                        MessageHistoryStore.getInstance().updateViewedMessage(
+                            userJid.phoneRawString,
+                            messageID,
+                            MessageHistoryStore.ReceiptType.READ,
+                            true
+                        )
+                        sendBlueTickMedia(fMessage)
+                    }
                     Utils.showToast(
                         Utils.getString(R.string.sending_read_blue_tick),
                         Toast.LENGTH_SHORT
@@ -503,7 +504,7 @@ class SeenTick(
                 val rawJid = XposedHelpers.getObjectField(obj, "jid") as String
                 val userJid = FMessageWpp.UserJid(rawJid)
                 if (userJid.isStatus) {
-                    val listStatus = MenuStatusListener.statusData.getCurrentItemList()
+                    val listStatus = MenuStatusProvider.statusData.getCurrentItemList()
 
                     listStatus.forEach { fstatus ->
                         val view = getRegisteredView(fstatus.messageID)

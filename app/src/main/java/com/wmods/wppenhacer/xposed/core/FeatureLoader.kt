@@ -15,6 +15,7 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Looper
 import android.util.Log
 import android.widget.Toast
 import androidx.core.content.ContextCompat
@@ -50,6 +51,7 @@ import com.wmods.wppenhacer.xposed.features.customization.ShowOnline
 import com.wmods.wppenhacer.xposed.features.general.AboutContactPicker
 import com.wmods.wppenhacer.xposed.features.general.AntiRevoke
 import com.wmods.wppenhacer.xposed.features.general.CallType
+import com.wmods.wppenhacer.xposed.features.general.CaptureDevice
 import com.wmods.wppenhacer.xposed.features.general.ChatLimit
 import com.wmods.wppenhacer.xposed.features.general.DeleteStatus
 import com.wmods.wppenhacer.xposed.features.general.NewChat
@@ -61,7 +63,7 @@ import com.wmods.wppenhacer.xposed.features.general.ShowEditMessage
 import com.wmods.wppenhacer.xposed.features.general.Tasker
 import com.wmods.wppenhacer.xposed.features.listeners.ContactItemListener
 import com.wmods.wppenhacer.xposed.features.listeners.ConversationItemListener
-import com.wmods.wppenhacer.xposed.features.listeners.MenuStatusListener
+import com.wmods.wppenhacer.xposed.features.providers.MenuStatusProvider
 import com.wmods.wppenhacer.xposed.features.media.CallRecording
 import com.wmods.wppenhacer.xposed.features.media.DownloadProfile
 import com.wmods.wppenhacer.xposed.features.media.DownloadViewOnce
@@ -94,6 +96,7 @@ import com.wmods.wppenhacer.xposed.features.privacy.LockedChatsEnhancer
 import com.wmods.wppenhacer.xposed.features.privacy.TagMessage
 import com.wmods.wppenhacer.xposed.features.privacy.TypingPrivacy
 import com.wmods.wppenhacer.xposed.features.privacy.ViewOnce
+import com.wmods.wppenhacer.xposed.features.providers.ContextMenuActionProvider
 import com.wmods.wppenhacer.xposed.spoofer.HookBL
 import com.wmods.wppenhacer.xposed.utils.DesignUtils
 import com.wmods.wppenhacer.xposed.utils.ReflectionUtils
@@ -108,6 +111,7 @@ import java.util.Date
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlin.jvm.java
 
 class FeatureLoader {
 
@@ -120,10 +124,12 @@ class FeatureLoader {
         const val PACKAGE_WPP = "com.whatsapp"
         const val PACKAGE_BUSINESS = "com.whatsapp.w4b"
 
-        private val list = ArrayList<ErrorItem>()
+        private val list = Collections.synchronizedList(ArrayList<ErrorItem>())
         private var supportedVersions: List<String>? = null
         private var currentVersion: String? = null
         private var crashHandlerInstalled = false
+        private const val UPDATE_CHECK_COOLDOWN_MS = 6 * 60 * 60 * 1000L
+        private var lastUpdateCheckScheduledAt = 0L
 
         @JvmStatic
         fun start(loader: ClassLoader, sourceDir: String) {
@@ -219,9 +225,11 @@ class FeatureLoader {
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         if (param.thisObject.javaClass.simpleName != "HomeActivity") return
-                        if (list.isNotEmpty()) {
+                        val errors = synchronized(list) { list.toList() }
+                        if (errors.isNotEmpty()) {
                             val activity = param.thisObject as Activity
-                            val msg = list.joinToString("\n") { "${it.pluginName} - ${it.message}" }
+                            val msg =
+                                errors.joinToString("\n") { "${it.pluginName} - ${it.message}" }
 
                             AlertDialogWpp(activity)
                                 .setTitle(activity.getString(R.string.error_detected))
@@ -237,7 +245,7 @@ class FeatureLoader {
                                         mApp?.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                     val clip = ClipData.newPlainText(
                                         "text",
-                                        list.joinToString("\n") { it.toString() })
+                                        errors.joinToString("\n") { it.toString() })
                                     clipboard.setPrimaryClip(clip)
                                     Toast.makeText(
                                         mApp,
@@ -291,6 +299,13 @@ class FeatureLoader {
             val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
             Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
                 try {
+                    XposedBridge.log(throwable)
+                    val isMainThread = Looper.getMainLooper().thread == thread
+                    val isFatalSystemError = throwable is Error
+                    if (!isMainThread && !isFatalSystemError) {
+                        previousHandler?.uncaughtException(thread, throwable)
+                        return@setDefaultUncaughtExceptionHandler
+                    }
                     val crashInfo = buildCrashInfo(application, whatsAppVersion)
                     val intent = Intent().apply {
                         component = ComponentName(
@@ -338,16 +353,18 @@ class FeatureLoader {
         @Throws(Exception::class)
         fun disableExpirationVersion(classLoader: ClassLoader) {
             val expirationClass = Unobfuscator.loadExpirationClass(classLoader)
-            val method =
-                ReflectionUtils.findMethodUsingFilter(expirationClass) { m -> m.returnType == Date::class.java }
-            XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val calendar = Calendar.getInstance().apply {
-                        set(2099, 11, 31)
+            val methods =
+                ReflectionUtils.findAllMethodsUsingFilter(expirationClass) { m -> m.returnType == Date::class.java }
+            for (method in methods) {
+                XposedBridge.hookMethod(method, object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val calendar = Calendar.getInstance().apply {
+                            set(2099, 11, 31)
+                        }
+                        param.result = calendar.time
                     }
-                    param.result = calendar.time
-                }
-            })
+                })
+            }
         }
 
         @Throws(Exception::class)
@@ -369,9 +386,20 @@ class FeatureLoader {
 
                 if (App.isOriginalPackage && pref.getBoolean("update_check", true)) {
                     if (activity.javaClass.simpleName == "HomeActivity" && type == WppCore.ActivityChangeState.ChangeType.RESUMED) {
-                        activity.window.decorView.postDelayed({
-                            CompletableFuture.runAsync(UpdateChecker(activity))
-                        }, 2000)
+                        val now = System.currentTimeMillis()
+                        val shouldSchedule = synchronized(FeatureLoader::class.java) {
+                            if (now - lastUpdateCheckScheduledAt < UPDATE_CHECK_COOLDOWN_MS) {
+                                false
+                            } else {
+                                lastUpdateCheckScheduledAt = now
+                                true
+                            }
+                        }
+                        if (shouldSchedule) {
+                            activity.window.decorView.postDelayed({
+                                CompletableFuture.runAsync(UpdateChecker(activity))
+                            }, 2000)
+                        }
                     }
                 }
             }
@@ -477,7 +505,7 @@ class FeatureLoader {
                 DebugFeature::class.java,
                 ContactItemListener::class.java,
                 ConversationItemListener::class.java,
-                MenuStatusListener::class.java,
+                MenuStatusProvider::class.java,
                 ShowEditMessage::class.java,
                 AntiRevoke::class.java,
                 CustomToolbar::class.java,
@@ -534,13 +562,17 @@ class FeatureLoader {
                 BackupRestore::class.java,
                 JumpFirstMessage::class.java,
                 AboutContactPicker::class.java,
-                DefaultEmoji::class.java
+                DefaultEmoji::class.java,
+                CaptureDevice::class.java,
+                ContextMenuActionProvider::class.java
             )
 
             XposedBridge.log("Loading Plugins")
-            val executorService = Executors.newWorkStealingPool(
-                Runtime.getRuntime().availableProcessors().coerceAtMost(4)
-            )
+            val executorService = Executors.newSingleThreadExecutor { runnable ->
+                Thread(runnable, "WAE-HookInstaller").apply {
+                    isDaemon = true
+                }
+            }
             val times = Collections.synchronizedList(ArrayList<String>())
 
             for (clazz in classes) {
@@ -579,7 +611,8 @@ class FeatureLoader {
             executorService.awaitTermination(15, TimeUnit.SECONDS)
 
             if (Feature.DEBUG) {
-                times.forEach { XposedBridge.log(it) }
+                val loadedTimes = synchronized(times) { times.toList() }
+                loadedTimes.forEach { XposedBridge.log(it) }
             }
         }
     }

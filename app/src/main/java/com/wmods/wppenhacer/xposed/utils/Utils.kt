@@ -63,7 +63,15 @@ object Utils {
 
 
     val executor: ExecutorService by lazy {
-         Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+        Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors())
+    }
+
+    val databaseExecutor: ExecutorService by lazy {
+        Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "WAE-Database").apply {
+                isDaemon = true
+            }
+        }
     }
 
     @JvmStatic
@@ -272,10 +280,9 @@ object Utils {
     }
 
     fun getMyNumber(): String {
-        return FeatureLoader.mApp!!.getSharedPreferences(
-            FeatureLoader.mApp!!.packageName + "_preferences_light",
-            Context.MODE_PRIVATE
-        ).getString("ph", "")!!
+        val dataDir = getAccountDataDir()
+        return CDSharedPreferences(File(dataDir, "shared_prefs/${FeatureLoader.mApp!!.packageName}_preferences_light.xml"))
+            .getString("ph", "")!!
     }
 
 
@@ -319,6 +326,20 @@ object Utils {
         mActivity.startActivity(browserIntent)
     }
 
+    fun getAccountDataDir(): File {
+        val dataDir = application.filesDir.parentFile
+        val sw = File(dataDir, "/app_account_switching/active_account")
+        if (sw.exists()) {
+            val accountId = sw.readText().trim()
+            if (accountId.isNotEmpty()) {
+                val accountDir = File(dataDir, "/accounts/$accountId")
+                if (accountDir.exists()) {
+                    return accountDir
+                }
+            }
+        }
+        return dataDir!!
+    }
 
     fun interface BinderLocalScopeBlock<T> {
         fun execute(): T?

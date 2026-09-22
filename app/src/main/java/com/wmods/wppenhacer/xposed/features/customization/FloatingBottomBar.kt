@@ -118,7 +118,7 @@ class FloatingBottomBar(loader: ClassLoader, preferences: SharedPreferences) :
             val container = bar.parent as? ViewGroup ?: return false
             val rootView = findRootView(bar) ?: return false
             if (container.parent === rootView) {
-                updateOverlayLayout(rootView, container)
+                updateOverlayLayout(rootView, container, bar)
                 applyTransparentShadowStyle(container, bar)
                 positionFabsAboveBar(rootView, container)
                 return true
@@ -127,8 +127,8 @@ class FloatingBottomBar(loader: ClassLoader, preferences: SharedPreferences) :
             (container.parent as? ViewGroup)?.removeView(container)
 
             val rootParams = FrameLayout.LayoutParams(
-                container.width,
-                container.height
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
                 gravity = Gravity.BOTTOM
                 bottomMargin = navigationBarInset(rootView) + Utils.dipToPixels(BOTTOM_MARGIN_DP)
@@ -146,11 +146,17 @@ class FloatingBottomBar(loader: ClassLoader, preferences: SharedPreferences) :
         }
     }
 
-    private fun updateOverlayLayout(rootView: FrameLayout, container: ViewGroup) {
+    private fun updateOverlayLayout(rootView: FrameLayout, container: ViewGroup, bar: ViewGroup) {
         val params = container.layoutParams as? FrameLayout.LayoutParams ?: return
         params.gravity = Gravity.BOTTOM
+        params.width = ViewGroup.LayoutParams.MATCH_PARENT
+        params.height = ViewGroup.LayoutParams.WRAP_CONTENT
         params.bottomMargin = navigationBarInset(rootView) + Utils.dipToPixels(BOTTOM_MARGIN_DP)
         container.layoutParams = params
+        bar.layoutParams = bar.layoutParams.apply {
+            width = ViewGroup.LayoutParams.MATCH_PARENT
+            height = ViewGroup.LayoutParams.WRAP_CONTENT
+        }
     }
 
     private fun navigationBarInset(view: View): Int {
@@ -220,8 +226,21 @@ class FloatingBottomBar(loader: ClassLoader, preferences: SharedPreferences) :
         val sideMargin = Utils.dipToPixels(SIDE_MARGIN_DP)
         val params = bar.layoutParams as? ViewGroup.MarginLayoutParams
         if (params != null) {
+            params.width = ViewGroup.LayoutParams.MATCH_PARENT
+            params.height = ViewGroup.LayoutParams.WRAP_CONTENT
             params.setMargins(sideMargin, 0, sideMargin, 0)
             bar.layoutParams = params
+        }
+
+        val bottomInset = navigationBarInset(bar)
+        if (bottomInset > 0) {
+            val bottomPadding = (bar.paddingBottom - bottomInset).coerceAtLeast(0)
+            bar.setPaddingRelative(
+                bar.paddingStart,
+                bar.paddingTop,
+                bar.paddingEnd,
+                bottomPadding
+            )
         }
     }
 

@@ -88,6 +88,8 @@
     <string name="call_blocker_buttons_only_unknown_block">Bloquear solo números desconocidos</string>
     <string name="show_edited_message_history">Mostrar historial de mensajes editados</string>
     <string name="show_edited_message_history_sum">Mostrar el historial de mensajes editados al hacer clic en \"Editado\" en un mensaje</string>
+    <string name="capture_device_title">Mostrar dispositivo del remitente</string>
+    <string name="capture_device_sum">Mostrar indicador de si el mensaje se envió desde un teléfono o dispositivo vinculado</string>
     <string name="dnd_message">Cuando el modo No molestar esté activado, no podrás enviar ni recibir mensajes</string>
     <string name="dnd_mode_title">Modo No Molestar (DND)</string>
     <string name="activate">Activar</string>
@@ -443,12 +445,6 @@
     <string name="disable_status_in_the_profile_photo">Desactivar estado en la foto de perfil</string>
     <string name="disable_status_in_the_profile_photo_sum">Deshabilita el círculo que aparece en la foto de perfil de cada contacto cuando hay un nuevo estado</string>
     <string name="download_not_available">La descarga no está disponible o el archivo no se ha descargado completamente</string>
-    <string name="possible_block_detected">Posible bloqueo detectado</string>
-    <string name="block_not_detected">Bloqueo no detectado</string>
-    <string name="checking_if_the_contact_is_blocked">Comprobando si el contacto te ha bloqueado...</string>
-    <string name="show_contact_blocked">Mostrar contacto bloqueado en conversación</string>
-    <string name="show_contact_blocked_sum">Esta opción verifica si el contacto puede haberlo bloqueado (nota: pueden ocurrir falsos positivos).</string>
-    <string name="block_unverified">Bloqueo no verificado</string>
     <string name="disable_whatsapp_expiration">Desactivar expiración de WhatsApp</string>
     <string name="disable_whatsapp_expiration_sum">Desactiva la versión caducada de WhatsApp, (Nota: Desactivar manualmente para actualizar WhatsApp en la Play Store o marcar la Play Store en LSposed)</string>
     <string name="disable_ads">Desactivar Anuncios</string>

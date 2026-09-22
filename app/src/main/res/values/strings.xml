@@ -90,6 +90,8 @@
     <string name="call_blocker_buttons_only_unknown_block">Block only unknown numbers</string>
     <string name="show_edited_message_history">Show Edited Message History</string>
     <string name="show_edited_message_history_sum">Show edited message history when clicking \"Edited\" on a message</string>
+    <string name="capture_device_title">Show Sender Device</string>
+    <string name="capture_device_sum">Show indicator whether the message was sent from a phone or linked device</string>
     <string name="dnd_message">When Do Not Disturb mode is on, you will be unable to send or receive messages</string>
     <string name="dnd_mode_title">DND Mode</string>
     <string name="activate">Activate</string>
@@ -168,6 +170,8 @@
     <string name="floating_bottom_bar_sum">Enable iOS-style floating bottom navigation bar</string>
     <string name="floating_bottom_bar_radius">Bottom Bar Corner Radius</string>
     <string name="floating_bottom_bar_radius_sum">Adjust the border radius of the floating bottom bar</string>
+    <string name="disable_swipe_up_in_group">Disable swipe up gesture in groups</string>
+    <string name="disable_swipe_up_in_group_sum">Disables the swipe up gesture in group chats</string>
     <string name="selection_of_call_type">Enable selection of call type</string>
     <string name="selection_of_call_type_sum">Show an option to select whether you want a call via phone or WhatsApp</string>
     <string name="yes">Yes</string>

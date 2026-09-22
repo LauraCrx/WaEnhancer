@@ -1,3 +1,4 @@
+import com.android.build.api.variant.impl.VariantOutputImpl
 import com.android.build.gradle.internal.api.BaseVariantOutputImpl
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -7,27 +8,18 @@ import kotlin.time.Duration.Companion.milliseconds
 
 plugins {
     alias(libs.plugins.androidApplication)
-    alias(libs.plugins.materialthemebuilder)
-    alias(libs.plugins.kotlinAndroid)
     alias(libs.plugins.kspPlugin)
 }
 
-fun getGitHashCommit(): String {
-    return try {
-        val processBuilder = ProcessBuilder("git", "rev-parse", "HEAD")
-        val process = processBuilder.start()
-        process.inputStream.bufferedReader().readText().trim().substring(0,8)
-    } catch (_: Exception) {
-        "unknown"
-    }
-}
-
-val gitHash: String = getGitHashCommit().uppercase(Locale.getDefault())
+val gitHash: String = providers.exec {
+    commandLine("git", "rev-parse", "HEAD")
+    isIgnoreExitValue = true
+}.standardOutput.asText.map { it.trim().uppercase(Locale.getDefault()).substring(0,8) }.getOrElse("UNKNOWN")
 
 android {
     namespace = "com.wmods.wppenhacer"
     //noinspection GradleDependency
-    compileSdk = 36
+    compileSdk = 37
     ndkVersion = "28.2.13676358"
 
     flavorDimensions += "version"
@@ -73,7 +65,7 @@ android {
             abiFilters.add("x86")
         }
 
-        buildConfigField("Boolean", "RESET_ON_INSTALL", "false")
+        buildConfigField("Boolean", "RESET_ON_INSTALL", "true")
 
     }
 
@@ -102,7 +94,7 @@ android {
     buildTypes {
 
         debug {
-            isMinifyEnabled = project.hasProperty("minify") && project.properties["minify"].toString().toBoolean()
+            isMinifyEnabled = project.hasProperty("minify") && project.findProperty("minify").toString().toBoolean()
             //noinspection NotShrinkingResources
             isShrinkResources = false
             signingConfig =
@@ -142,40 +134,18 @@ android {
         baseline = file("lint-baseline.xml")
     }
 
-    applicationVariants.all {
-        val appName = when (flavorName) {
+}
+
+androidComponents {
+    onVariants { variant ->
+        val appName = when (variant.flavorName) {
             "business" -> "WaEnhancer-Business"
             else -> "WaEnhancer"
         }
-
-        outputs.all {
-            (this as BaseVariantOutputImpl).outputFileName = "$appName-$versionName.apk"
+        variant.outputs.forEach { output ->
+            (output as VariantOutputImpl).outputFileName.set("$appName-1.5.5 ($gitHash).apk")
         }
     }
-
-    materialThemeBuilder {
-        themes {
-            for ((name, color) in listOf(
-                "Green" to "4FAF50",
-                "Blue" to "3B82F6",
-                "Cyan" to "06B6D4",
-                "Purple" to "8B5CF6",
-                "Orange" to "F97316",
-                "Red" to "EF4444",
-                "Pink" to "EC4899"
-            )) {
-                create("Material$name") {
-                    lightThemeFormat = "ThemeOverlay.Light.%s"
-                    darkThemeFormat = "ThemeOverlay.Dark.%s"
-                    primaryColor = "#$color"
-                }
-            }
-        }
-        // Add Material Design 3 color tokens (such as palettePrimary100) in generated theme
-        // rikka.material >= 2.0.0 provides such attributes
-        generatePalette = true
-    }
-
 }
 
 kotlin {
@@ -185,6 +155,7 @@ kotlin {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
     implementation(libs.colorpicker)
     implementation(files("libs/dexkit-android.aar"))
     implementation(libs.flatbuffers)
@@ -198,6 +169,7 @@ dependencies {
     implementation(libs.androidx.fragment)
     implementation(libs.androidx.navigation.fragment)
     implementation(libs.androidx.navigation.ui)
+    implementation(libs.androidx.preference)
     implementation(libs.androidx.room.runtime)
     implementation(libs.rikkax.appcompat)
     implementation(libs.rikkax.core)
@@ -211,8 +183,6 @@ dependencies {
     implementation(libs.betterypermissionhelper)
     implementation(libs.bcpkix.jdk18on)
     implementation(libs.arscblamer)
-    compileOnly(libs.lombok)
-    annotationProcessor(libs.lombok)
     implementation(libs.markwon.core)
     implementation(libs.remote.preferences)
 }
@@ -239,9 +209,9 @@ afterEvaluate {
     listOf("installWhatsappDebug", "installBusinessDebug").forEach { taskName ->
         tasks.findByName(taskName)?.doLast {
             runCatching {
-                val injected  = project.objects.newInstance<InjectedExecOps>()
+                val injected = project.objects.newInstance<InjectedExecOps>()
                 runBlocking {
-                    delay(500.milliseconds)
+                    delay(1000.milliseconds)
                     injected.execOps.exec {
                         commandLine(
                             "adb",
@@ -251,14 +221,15 @@ afterEvaluate {
                             project.properties["debug_package_name"]?.toString()
                         )
                     }
+                    delay(3000.milliseconds)
                     injected.execOps.exec {
                         commandLine(
                             "adb",
                             "shell",
-                            "monkey",
-                            "-p",
-                            project.properties["debug_package_name"].toString(),
-                            "1"
+                            "am",
+                            "start",
+                            "-n",
+                            "$(cmd package resolve-activity --brief ${project.properties["debug_package_name"]} | tail -n 1)"
                         )
                     }
                 }
