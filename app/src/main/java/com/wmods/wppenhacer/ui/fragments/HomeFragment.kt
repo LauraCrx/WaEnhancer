@@ -1,6 +1,5 @@
 package com.wmods.wppenhacer.ui.fragments
 
-import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -25,7 +24,6 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.wmods.wppenhacer.App
 import com.wmods.wppenhacer.BuildConfig
 import com.wmods.wppenhacer.R
-import com.wmods.wppenhacer.activities.MainActivity
 import com.wmods.wppenhacer.adapter.LogLineAdapter
 import com.wmods.wppenhacer.databinding.DialogDiagnosticsLogBinding
 import com.wmods.wppenhacer.databinding.FragmentHomeBinding
@@ -45,11 +43,10 @@ import org.json.JSONObject
 import rikka.core.util.IOUtils
 import java.net.UnknownHostException
 import java.text.SimpleDateFormat
-import java.util.ArrayList
 import java.util.Date
-import java.util.HashSet
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import androidx.core.content.edit
 
 class HomeFragment : BaseFragment() {
 
@@ -68,7 +65,7 @@ class HomeFragment : BaseFragment() {
                     } else {
                         receiverBroadcastBusiness(context, intent)
                     }
-                } catch (ignored: Exception) {
+                } catch (_: Exception) {
                 }
             }
         }, intentFilter, ContextCompat.RECEIVER_EXPORTED)
@@ -174,6 +171,7 @@ class HomeFragment : BaseFragment() {
     override fun onResume() {
         super.onResume()
         setDisplayHomeAsUpEnabled(false)
+        updatePackageStatuses(requireContext())
     }
 
     private fun receiverBroadcastBusiness(context: Context, intent: Intent) {
@@ -181,7 +179,7 @@ class HomeFragment : BaseFragment() {
         binding.statusTitle3.setText(R.string.business_in_background)
         val version = intent.getStringExtra("VERSION")
         val supportedList = context.resources.getStringArray(R.array.supported_versions_business).toList()
-        if (version != null && supportedList.any { s -> version.startsWith(s.replace(".xx", "")) }) {
+        if (isSupportedVersion(version, supportedList)) {
             binding.statusSummary3.text = getString(R.string.version_s, version)
             binding.status3.getChildAt(0).setBackgroundResource(R.drawable.gradient_success)
         } else {
@@ -198,7 +196,7 @@ class HomeFragment : BaseFragment() {
         val version = intent.getStringExtra("VERSION")
         val supportedList = context.resources.getStringArray(R.array.supported_versions_wpp).toList()
 
-        if (version != null && supportedList.any { s -> version.startsWith(s.replace(".xx", "")) }) {
+        if (isSupportedVersion(version, supportedList)) {
             binding.statusSummary1.text = getString(R.string.version_s, version)
             binding.status2.getChildAt(0).setBackgroundResource(R.drawable.gradient_success)
         } else {
@@ -212,9 +210,9 @@ class HomeFragment : BaseFragment() {
 
     private fun resetConfigs(context: Context) {
         val prefs = PreferenceManager.getDefaultSharedPreferences(context)
-        val editor = prefs.edit()
-        prefs.all.keys.forEach { key -> editor.remove(key) }
-        editor.apply()
+        prefs.edit {
+            prefs.all.keys.forEach { key -> remove(key) }
+        }
         App.instance.restartApp(FeatureLoader.PACKAGE_WPP)
         App.instance.restartApp(FeatureLoader.PACKAGE_BUSINESS)
         Utils.showToast(context.getString(R.string.configs_reset), Toast.LENGTH_SHORT)
@@ -272,36 +270,40 @@ class HomeFragment : BaseFragment() {
                         val prefs = PreferenceManager.getDefaultSharedPreferences(context)
                         val jsonObject = JSONObject(data)
 
-                        val editor = prefs.edit()
-                        prefs.all.keys.forEach { key -> editor.remove(key) }
+                        prefs.edit {
+                            prefs.all.keys.forEach { key -> remove(key) }
 
-                        val keys = jsonObject.keys()
-                        while (keys.hasNext()) {
-                            val keyName = keys.next()
-                            var value = jsonObject.get(keyName)
-                            var type = value.javaClass.simpleName
-                            if (value is JSONObject) {
-                                type = value.getString("type")
-                                value = value.get("value")
-                            }
-
-                            when (type) {
-                                "JSONArray" -> {
-                                    val jsonArray = value as JSONArray
-                                    val hashSet = HashSet<String>()
-                                    for (i in 0 until jsonArray.length()) {
-                                        hashSet.add(jsonArray.getString(i))
-                                    }
-                                    editor.putStringSet(keyName, hashSet)
+                            val keys = jsonObject.keys()
+                            while (keys.hasNext()) {
+                                val keyName = keys.next()
+                                var value = jsonObject.get(keyName)
+                                var type = value.javaClass.simpleName
+                                if (value is JSONObject) {
+                                    type = value.getString("type")
+                                    value = value.get("value")
                                 }
-                                "String" -> editor.putString(keyName, value as String)
-                                "Boolean", "boolean" -> editor.putBoolean(keyName, value as Boolean)
-                                "Integer", "int" -> editor.putInt(keyName, value as Int)
-                                "Long", "long" -> editor.putLong(keyName, (value as Number).toLong())
-                                "Double", "double", "Float", "float" -> editor.putFloat(keyName, (value as Number).toFloat())
+
+                                when (type) {
+                                    "JSONArray" -> {
+                                        val jsonArray = value as JSONArray
+                                        val hashSet = HashSet<String>()
+                                        for (i in 0 until jsonArray.length()) {
+                                            hashSet.add(jsonArray.getString(i))
+                                        }
+                                        putStringSet(keyName, hashSet)
+                                    }
+
+                                    "String" -> putString(keyName, value as String)
+                                    "Boolean", "boolean" -> putBoolean(keyName, value as Boolean)
+                                    "Integer", "int" -> putInt(keyName, value as Int)
+                                    "Long", "long" -> putLong(keyName, (value as Number).toLong())
+                                    "Double", "double", "Float", "float" -> putFloat(
+                                        keyName,
+                                        (value as Number).toFloat()
+                                    )
+                                }
                             }
                         }
-                        editor.apply()
                     }
                     withContext(Dispatchers.Main) {
                         Toast.makeText(context, context.getString(R.string.configs_imported), Toast.LENGTH_SHORT).show()
@@ -320,7 +322,7 @@ class HomeFragment : BaseFragment() {
     }
 
     private fun checkStateWpp(activity: FragmentActivity) {
-        if (MainActivity.isXposedEnabled()) {
+        if (App.instance.isXposedEnabled()) {
             binding.statusIcon.setImageResource(R.drawable.ic_round_check_circle_24)
             binding.statusTitle.setText(R.string.module_enabled)
             binding.statusSummary.text = String.format(getString(R.string.version_s), BuildConfig.VERSION_NAME)
@@ -350,15 +352,73 @@ class HomeFragment : BaseFragment() {
             binding.listWpp.visibility = View.GONE
         }
         binding.listBusiness.text = activity.resources.getStringArray(R.array.supported_versions_business).contentToString()
+        updatePackageStatuses(activity)
+    }
+
+    private fun updatePackageStatuses(context: Context) {
+        updatePackageStatus(
+            context,
+            binding.whatsappPackageSummary,
+            binding.whatsappPackageIcon,
+            FeatureLoader.PACKAGE_WPP,
+            context.resources.getStringArray(R.array.supported_versions_wpp).toList()
+        )
+        updatePackageStatus(
+            context,
+            binding.businessPackageSummary,
+            binding.businessPackageIcon,
+            FeatureLoader.PACKAGE_BUSINESS,
+            context.resources.getStringArray(R.array.supported_versions_business).toList()
+        )
+    }
+
+    private fun updatePackageStatus(
+        context: Context,
+        summary: android.widget.TextView,
+        icon: android.widget.ImageView,
+        packageName: String,
+        supportedVersions: List<String>
+    ) {
+        val packageInfo = try {
+            context.packageManager.getPackageInfo(packageName, 0)
+        } catch (_: Exception) {
+            null
+        }
+
+        if (packageInfo == null) {
+            summary.setText(R.string.app_not_installed)
+            icon.setImageResource(R.drawable.ic_round_error_outline_24)
+            return
+        }
+
+        val version = packageInfo.versionName
+        if (version.isNullOrBlank()) {
+            summary.setText(R.string.app_installed_version_unknown)
+            icon.setImageResource(R.drawable.ic_round_warning_24)
+            return
+        }
+
+        val supported = isSupportedVersion(version, supportedVersions)
+        summary.text = getString(
+            if (supported) R.string.app_version_s_supported else R.string.app_version_s_unsupported,
+            version
+        )
+        icon.setImageResource(
+            if (supported) R.drawable.ic_round_check_circle_24 else R.drawable.ic_round_warning_24
+        )
     }
 
     private fun isInstalled(packageWpp: String): Boolean {
         return try {
             App.instance.packageManager.getPackageInfo(packageWpp, 0)
             true
-        } catch (ignored: Exception) {
+        } catch (_: Exception) {
             false
         }
+    }
+
+    private fun isSupportedVersion(version: String?, supportedVersions: List<String>): Boolean {
+        return version != null && supportedVersions.any { version.startsWith(it.replace(".xx", "")) }
     }
 
     private fun disableBusiness() {
@@ -399,30 +459,30 @@ class HomeFragment : BaseFragment() {
 
                 client.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) {
-                        updateCardState(false, false, null)
+                        updateCardState(success = false, isUpToDate = false, newVersion = null)
                         return@use
                     }
 
                     val body = response.body
-                    val content = body?.string() ?: ""
+                    val content = body.string()
                     val release = JSONObject(content)
                     val tagName = release.optString("tag_name", "")
 
                     if (tagName.isBlank()) {
-                        updateCardState(true, true, null)
+                        updateCardState(success = true, isUpToDate = true, newVersion = null)
                         return@use
                     }
 
                     val parts = tagName.split("-")
                     val hash = if (parts.size > 1) parts[1].trim() else ""
-                    val isNewVersion = hash.isNotEmpty() && !BuildConfig.VERSION_NAME.lowercase(Locale.ROOT).contains(hash.lowercase(Locale.ROOT))
+                    val isNewVersion = hash.isNotEmpty() && !BuildConfig.VERSION_NAME.lowercase().contains(hash.lowercase().trim())
 
-                    updateCardState(true, !isNewVersion, tagName)
+                    updateCardState(success = true, isUpToDate = !isNewVersion, newVersion = tagName)
                 }
-            } catch (e: UnknownHostException) {
-                updateCardState(false, false, null)
-            } catch (e: Exception) {
-                updateCardState(false, false, null)
+            } catch (_: UnknownHostException) {
+                updateCardState(success = false, isUpToDate = false, newVersion = null)
+            } catch (_: Exception) {
+                updateCardState(success = false, isUpToDate = false, newVersion = null)
             }
         }
     }

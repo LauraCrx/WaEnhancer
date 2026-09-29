@@ -1,5 +1,3 @@
-import com.android.build.api.variant.impl.VariantOutputImpl
-import com.android.build.gradle.internal.api.BaseVariantOutputImpl
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
@@ -42,8 +40,8 @@ android {
         minSdk = 28
         //noinspection OldTargetApi
         targetSdk = 34
-        versionCode = 154
-        versionName = "1.5.5 ($gitHash)"
+        versionCode = 160
+        versionName = "1.6.0 ($gitHash)"
         multiDexEnabled = true
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -143,7 +141,7 @@ androidComponents {
             else -> "WaEnhancer"
         }
         variant.outputs.forEach { output ->
-            (output as VariantOutputImpl).outputFileName.set("$appName-1.5.5 ($gitHash).apk")
+            output.outputFileName.set(output.versionName.map { "$appName-$it.apk" })
         }
     }
 }
