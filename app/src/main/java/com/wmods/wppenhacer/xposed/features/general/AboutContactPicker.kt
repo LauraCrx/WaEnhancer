@@ -33,6 +33,8 @@ import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.RoundedBitmapDrawableFactory
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import com.highcapable.kavaref.KavaRef.Companion.resolve
+import com.highcapable.yukihookapi.extension.kavaref.hook
 import com.wmods.wppenhacer.R
 import com.wmods.wppenhacer.model.ContactData
 import com.wmods.wppenhacer.model.ContactPickerResult
@@ -42,151 +44,157 @@ import com.wmods.wppenhacer.xposed.core.FeatureLoader
 import com.wmods.wppenhacer.xposed.core.WppCore
 import com.wmods.wppenhacer.xposed.core.components.FMessageWpp
 import com.wmods.wppenhacer.xposed.core.components.WaContactWpp
+import com.wmods.wppenhacer.xposed.core.db.MessageStore
 import com.wmods.wppenhacer.xposed.utils.DesignUtils
 import com.wmods.wppenhacer.xposed.utils.ModuleContextWrapper
+import com.wmods.wppenhacer.xposed.utils.ReflectionUtils
 import com.wmods.wppenhacer.xposed.utils.Utils
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
+import com.wmods.wppenhacer.xposed.utils.YukiLog
 import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
-class AboutContactPicker(loader: ClassLoader, preferences:SharedPreferences) :
+class AboutContactPicker(loader: ClassLoader, preferences: SharedPreferences) :
     Feature(loader, preferences) {
 
     override fun doHook() {
         val aboutClass = WppCore.aboutActivityClass
 
-        XposedHelpers.findAndHookMethod(
-            Activity::class.java,
-            "onCreate",
-            Bundle::class.java,
-            object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val activity = param.thisObject as Activity
-                    if (!isTargetAboutActivity(
-                            activity,
-                            aboutClass
-                        ) || !isPickerLaunch(activity.intent)
-                    ) {
-                        return
-                    }
-                    val controller = getOrCreateController(activity)
-                    controller.bindIntent(activity.intent)
-                    controller.attach()
-                }
-            })
-
-        XposedHelpers.findAndHookMethod(Activity::class.java, "onResume", object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                val activity = param.thisObject as Activity
+        Activity::class.java.resolve().firstMethod {
+            name = "onCreate"
+            superclass()
+            parameters(Bundle::class.java)
+        }.hook {
+            after {
+                val activity = instance as Activity
                 if (!isTargetAboutActivity(
                         activity,
                         aboutClass
                     ) || !isPickerLaunch(activity.intent)
                 ) {
-                    return
+                    return@after
+                }
+                val controller = getOrCreateController(activity)
+                controller.bindIntent(activity.intent)
+                controller.attach()
+            }
+        }
+
+        Activity::class.java.resolve().firstMethod {
+            name = "onResume"
+            superclass()
+            emptyParameters()
+        }.hook {
+            after {
+                val activity = instance as Activity
+                if (!isTargetAboutActivity(
+                        activity,
+                        aboutClass
+                    ) || !isPickerLaunch(activity.intent)
+                ) {
+                    return@after
                 }
                 val controller = getOrCreateController(activity)
                 controller.bindIntent(activity.intent)
                 activity.window.decorView.post { controller.attach() }
             }
-        })
+        }
 
-        XposedHelpers.findAndHookMethod(
-            Activity::class.java,
-            "onNewIntent",
-            Intent::class.java,
-            object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val activity = param.thisObject as Activity
-                    if (!isTargetAboutActivity(activity, aboutClass)) {
-                        return
-                    }
-                    val intent = param.args[0] as Intent
-                    if (!isPickerLaunch(intent)) {
-                        return
-                    }
-                    activity.intent = intent
-                    val controller = getOrCreateController(activity)
-                    controller.bindIntent(intent)
-                    controller.attach()
-                    controller.reloadItems()
+        Activity::class.java.resolve().firstMethod {
+            name = "onNewIntent"
+            superclass()
+            parameters(Intent::class.java)
+        }.hook {
+            after {
+                val activity = instance as Activity
+                if (!isTargetAboutActivity(activity, aboutClass)) {
+                    return@after
                 }
-            })
+                val intent = args[0] as Intent
+                if (!isPickerLaunch(intent)) {
+                    return@after
+                }
+                activity.intent = intent
+                val controller = getOrCreateController(activity)
+                controller.bindIntent(intent)
+                controller.attach()
+                controller.reloadItems()
+            }
+        }
 
-        XposedHelpers.findAndHookMethod(
-            Activity::class.java,
-            "onDestroy",
-            object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val activity = param.thisObject as Activity
-                    if (!isTargetAboutActivity(activity, aboutClass)) {
-                        return
-                    }
-                    val controller = getController(activity)
-                    controller?.destroy()
-                    XposedHelpers.removeAdditionalInstanceField(activity, FIELD_CONTROLLER)
+        Activity::class.java.resolve().firstMethod {
+            name = "onDestroy"
+            superclass()
+            emptyParameters()
+        }.hook {
+            before {
+                val activity = instance as Activity
+                if (!isTargetAboutActivity(activity, aboutClass)) {
+                    return@before
                 }
-            })
+                val controller = getController(activity)
+                controller?.destroy()
+                ReflectionUtils.removeAdditionalInstanceField(activity, FIELD_CONTROLLER)
+            }
+        }
 
-        XposedHelpers.findAndHookMethod(
-            Activity::class.java,
-            "onBackPressed",
-            object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val activity = param.thisObject as Activity
-                    if (!isTargetAboutActivity(activity, aboutClass)) {
-                        return
-                    }
-                    val controller = getController(activity)
-                    if (controller != null && controller.handleBackPressed()) {
-                        param.result = null
-                    }
+        Activity::class.java.resolve().firstMethod {
+            name = "onBackPressed"
+            superclass()
+            emptyParameters()
+        }.hook {
+            before {
+                val activity = instance as Activity
+                if (!isTargetAboutActivity(activity, aboutClass)) {
+                    return@before
                 }
-            })
+                val controller = getController(activity)
+                if (controller != null && controller.handleBackPressed()) {
+                    result = null
+                }
+            }
+        }
 
-        XposedHelpers.findAndHookMethod(
-            Activity::class.java,
-            "onCreateOptionsMenu",
-            Menu::class.java,
-            object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val activity = param.thisObject as Activity
-                    if (!isTargetAboutActivity(
-                            activity,
-                            aboutClass
-                        ) || !isPickerLaunch(activity.intent)
-                    ) {
-                        return
-                    }
-                    (param.args[0] as Menu).clear()
-                    param.result = true
+        Activity::class.java.resolve().firstMethod {
+            name = "onCreateOptionsMenu"
+            superclass()
+            parameters(Menu::class.java)
+        }.hook {
+            before {
+                val activity = instance as Activity
+                if (!isTargetAboutActivity(
+                        activity,
+                        aboutClass
+                    ) || !isPickerLaunch(activity.intent)
+                ) {
+                    return@before
                 }
-            })
+                (args[0] as Menu).clear()
+                result = true
+            }
+        }
 
-        XposedHelpers.findAndHookMethod(
-            Activity::class.java,
-            "onOptionsItemSelected",
-            MenuItem::class.java,
-            object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val activity = param.thisObject as Activity
-                    if (!isTargetAboutActivity(
-                            activity,
-                            aboutClass
-                        ) || !isPickerLaunch(activity.intent)
-                    ) {
-                        return
-                    }
-                    param.result = true
+        Activity::class.java.resolve().firstMethod {
+            name = "onOptionsItemSelected"
+            superclass()
+            parameters(MenuItem::class.java)
+        }.hook {
+            before {
+                val activity = instance as Activity
+                if (!isTargetAboutActivity(
+                        activity,
+                        aboutClass
+                    ) || !isPickerLaunch(activity.intent)
+                ) {
+                    return@before
                 }
-            })
+                result = true
+            }
+        }
     }
 
     private fun getController(activity: Activity): PickerController? {
-        return XposedHelpers.getAdditionalInstanceField(
+        return ReflectionUtils.getAdditionalInstanceField(
             activity,
             FIELD_CONTROLLER
         ) as? PickerController
@@ -198,7 +206,7 @@ class AboutContactPicker(loader: ClassLoader, preferences:SharedPreferences) :
             return current
         }
         current = PickerController(activity)
-        XposedHelpers.setAdditionalInstanceField(activity, FIELD_CONTROLLER, current)
+        ReflectionUtils.setAdditionalInstanceField(activity, FIELD_CONTROLLER, current)
         return current
     }
 
@@ -429,8 +437,8 @@ class AboutContactPicker(loader: ClassLoader, preferences:SharedPreferences) :
                 rootView = root
                 true
             } catch (t: Throwable) {
-                XposedBridge.log("AboutContactPicker: failed to build root view: $t")
-                XposedBridge.log(t)
+                YukiLog.log("AboutContactPicker: failed to build root view: $t")
+                YukiLog.log(t)
                 rootView = null
                 false
             }
@@ -673,7 +681,7 @@ class AboutContactPicker(loader: ClassLoader, preferences:SharedPreferences) :
                         allItems.addAll(loadedItems)
                         selectedJids.clear()
                         for (item in loadedItems) {
-                            if (preservedSelection.contains(item.jid)) {
+                            if (item.aliases.any(preservedSelection::contains)) {
                                 selectedJids.add(item.jid)
                             }
                         }
@@ -681,7 +689,7 @@ class AboutContactPicker(loader: ClassLoader, preferences:SharedPreferences) :
                         stopRefreshing()
                     }
                 } catch (throwable: Throwable) {
-                    XposedBridge.log(throwable)
+                    YukiLog.log(throwable)
                     mainHandler.post {
                         emptyView?.text = getString(R.string.picker_no_results)
                         stopRefreshing()
@@ -727,7 +735,8 @@ class AboutContactPicker(loader: ClassLoader, preferences:SharedPreferences) :
             adapter?.submit(visibleItems)
             emptyView?.visibility = if (visibleItems.isEmpty()) View.VISIBLE else View.GONE
             if (visibleItems.isEmpty()) {
-                emptyView?.text = getString(if (loading) R.string.picker_loading_contacts else R.string.picker_no_results)
+                emptyView?.text =
+                    getString(if (loading) R.string.picker_loading_contacts else R.string.picker_no_results)
             }
             updateActionBarTitle()
         }
@@ -800,7 +809,7 @@ class AboutContactPicker(loader: ClassLoader, preferences:SharedPreferences) :
                     }
                 }
             } catch (throwable: Throwable) {
-                XposedBridge.log(throwable)
+                YukiLog.log(throwable)
                 null
             }
         }
@@ -881,16 +890,21 @@ class AboutContactPicker(loader: ClassLoader, preferences:SharedPreferences) :
         val jid: String,
         val displayName: String,
         val waName: String,
-        val type: ContactType
+        val type: ContactType,
+        val aliases: Set<String> = setOf(jid)
     ) {
         fun typeLabel(context: Context): String {
             return if (type == ContactType.GROUP) {
                 runCatching { context.getString(R.string.picker_group) }.getOrElse {
-                    runCatching { FeatureLoader.moduleContext.getString(R.string.picker_group) }.getOrDefault("Group")
+                    runCatching { FeatureLoader.moduleContext.getString(R.string.picker_group) }.getOrDefault(
+                        "Group"
+                    )
                 }
             } else {
                 runCatching { context.getString(R.string.picker_contact) }.getOrElse {
-                    runCatching { FeatureLoader.moduleContext.getString(R.string.picker_contact) }.getOrDefault("Contact")
+                    runCatching { FeatureLoader.moduleContext.getString(R.string.picker_contact) }.getOrDefault(
+                        "Contact"
+                    )
                 }
             }
         }
@@ -939,9 +953,10 @@ class AboutContactPicker(loader: ClassLoader, preferences:SharedPreferences) :
                 val content = LinearLayout(context).apply {
                     orientation = LinearLayout.VERTICAL
                     layoutParams =
-                        LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                            setMargins(Utils.dipToPixels(12f), 0, Utils.dipToPixels(12f), 0)
-                        }
+                        LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                            .apply {
+                                setMargins(Utils.dipToPixels(12f), 0, Utils.dipToPixels(12f), 0)
+                            }
                 }
 
                 val title = TextView(context).apply {
@@ -1029,6 +1044,24 @@ class AboutContactPicker(loader: ClassLoader, preferences:SharedPreferences) :
         )
     }
 
+    private class JidResolver(private val lidToPhone: Map<String, String>) {
+
+        private val phoneToLid = HashMap<String, String>().apply {
+            for ((lid, phone) in lidToPhone) put(phone, lid)
+        }
+
+        // Prefer the phone JID so selections stay compatible with previously saved values
+        fun canonical(jid: String): String = lidToPhone[jid] ?: jid
+
+        fun aliases(jid: String): Set<String> {
+            val aliases = LinkedHashSet<String>()
+            aliases.add(jid)
+            lidToPhone[jid]?.let { aliases.add(it) }
+            phoneToLid[jid]?.let { aliases.add(it) }
+            return aliases
+        }
+    }
+
     private object ContactPickerDataProvider {
 
         fun loadPickerItems(
@@ -1036,67 +1069,188 @@ class AboutContactPicker(loader: ClassLoader, preferences:SharedPreferences) :
             pinnedJids: List<String>
         ): ArrayList<ContactPickerItem> {
             val items = LinkedHashMap<String, ContactPickerItem>()
-            val database = WppCore.getWaDatabase()
+            val messageDatabase = try {
+                MessageStore.getInstance().getDatabase()
+            } catch (throwable: Throwable) {
+                YukiLog.log(throwable)
+                null
+            }
+            val resolver = JidResolver(loadLidToPhoneMap(messageDatabase))
+            val waDatabase = WppCore.getWaDatabase()
 
-            if (database != null) {
-                loadFromWaDatabase(items, database)
+            if (waDatabase != null) {
+                loadFromAddressBook(items, waDatabase, resolver)
+            }
+            if (messageDatabase != null) {
+                loadFromChats(items, messageDatabase, resolver)
+            }
+            if (waDatabase != null) {
+                loadFromWaContacts(items, waDatabase, resolver)
             }
 
             for (jid in pinnedJids) {
-                if (TextUtils.isEmpty(jid) || items.containsKey(jid) || !isSupportedPickerJid(jid)) {
-                    continue
-                }
-                items[jid] = buildItem(jid)
+                if (TextUtils.isEmpty(jid) || !isSupportedPickerJid(jid)) continue
+                val canonical = resolver.canonical(jid)
+                if (items.containsKey(canonical)) continue
+                items[canonical] = buildItem(canonical, null, resolver.aliases(canonical) + jid)
             }
 
-            return ArrayList(items.values)
+            return ArrayList(items.values.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.displayName }))
         }
 
-        private fun loadFromWaDatabase(
+        private fun loadLidToPhoneMap(database: SQLiteDatabase?): Map<String, String> {
+            val map = HashMap<String, String>()
+            if (database == null || !tableExists(database, "jid_map")) return map
+            try {
+                database.rawQuery(
+                    """
+                    SELECT lid.raw_string, phone.raw_string
+                    FROM jid_map
+                    INNER JOIN jid lid ON lid._id = jid_map.lid_row_id
+                    INNER JOIN jid phone ON phone._id = jid_map.jid_row_id
+                    WHERE lid.server = 'lid' AND phone.server = 's.whatsapp.net'
+                    """.trimIndent(), null
+                ).use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val lid = cursor.getString(0) ?: continue
+                        val phone = cursor.getString(1) ?: continue
+                        map[lid] = phone
+                    }
+                }
+            } catch (throwable: Throwable) {
+                YukiLog.log(throwable)
+            }
+            return map
+        }
+
+        // Newer WhatsApp versions moved the address book out of wa_contacts, keyed mostly by @lid
+        private fun loadFromAddressBook(
             items: LinkedHashMap<String, ContactPickerItem>,
-            database: SQLiteDatabase
+            database: SQLiteDatabase,
+            resolver: JidResolver
+        ) {
+            if (!tableExists(database, "wa_address_book")) return
+            try {
+                database.rawQuery(
+                    """
+                    SELECT book.jid, book.display_name, contact.wa_name
+                    FROM wa_address_book book
+                    LEFT JOIN wa_contacts contact ON contact.jid = book.jid
+                    WHERE book.is_whatsapp_user = 1 AND book.jid IS NOT NULL AND book.jid != ''
+                    """.trimIndent(), null
+                ).use { cursor ->
+                    while (cursor.moveToNext()) {
+                        addItem(items, cursor.getString(0), cursor.getString(1), cursor.getString(2), resolver)
+                    }
+                }
+            } catch (throwable: Throwable) {
+                YukiLog.log(throwable)
+            }
+        }
+
+        private fun loadFromChats(
+            items: LinkedHashMap<String, ContactPickerItem>,
+            database: SQLiteDatabase,
+            resolver: JidResolver
+        ) {
+            try {
+                database.rawQuery(
+                    """
+                    SELECT jid.raw_string, chat.subject
+                    FROM chat
+                    INNER JOIN jid ON jid._id = chat.jid_row_id
+                    WHERE chat.hidden = 0
+                      AND (jid.server IN ('s.whatsapp.net', 'lid')
+                        OR (jid.server = 'g.us' AND chat.subject IS NOT NULL AND chat.subject != ''))
+                    """.trimIndent(), null
+                ).use { cursor ->
+                    while (cursor.moveToNext()) {
+                        addItem(items, cursor.getString(0), cursor.getString(1), null, resolver)
+                    }
+                }
+            } catch (throwable: Throwable) {
+                YukiLog.log(throwable)
+            }
+        }
+
+        private fun loadFromWaContacts(
+            items: LinkedHashMap<String, ContactPickerItem>,
+            database: SQLiteDatabase,
+            resolver: JidResolver
         ) {
             try {
                 database.query(
                     "wa_contacts",
-                    arrayOf("jid", "display_name"),
-                    "jid IS NOT NULL AND jid != '' AND (jid LIKE '%@s.whatsapp.net' OR jid LIKE '%@g.us') AND (jid LIKE '%g.us' OR is_contact_synced is not NULL) AND is_whatsapp_user = 1",
-                    null, null, null,
-                    "display_name COLLATE NOCASE ASC, jid COLLATE NOCASE ASC"
+                    arrayOf("jid", "display_name", "wa_name"),
+                    "is_whatsapp_user = 1 AND jid IS NOT NULL AND jid != '' AND ((jid LIKE '%@g.us' AND display_name IS NOT NULL AND display_name != '') OR ((jid LIKE '%@s.whatsapp.net' OR jid LIKE '%@lid') AND (raw_contact_id > 0 OR raw_contact_id IN (-2, -3, -5))))",
+                    null, null, null, null
                 ).use { cursor ->
                     while (cursor.moveToNext()) {
-                        val jid = cursor.getString(0)
-                        if (TextUtils.isEmpty(jid) || items.containsKey(jid) || !isSupportedPickerJid(
-                                jid
-                            )
-                        ) {
-                            continue
-                        }
-                        items[jid] = buildItem(jid, cursor.getString(1))
+                        addItem(items, cursor.getString(0), cursor.getString(1), cursor.getString(2), resolver)
                     }
                 }
             } catch (throwable: Throwable) {
-                XposedBridge.log(throwable)
+                YukiLog.log(throwable)
             }
         }
 
-        private fun buildItem(jid: String, fallbackDisplayName: String? = null): ContactPickerItem {
+        private fun addItem(
+            items: LinkedHashMap<String, ContactPickerItem>,
+            rawJid: String?,
+            name: String?,
+            waName: String?,
+            resolver: JidResolver
+        ) {
+            if (rawJid.isNullOrEmpty() || !isSupportedPickerJid(rawJid)) return
+            val jid = resolver.canonical(rawJid)
+            if (items.containsKey(jid)) return
+            val aliases = resolver.aliases(jid) + rawJid
+            val resolvedName = sanitize(name)
+            items[jid] = if (resolvedName != null) {
+                val type = if (jid.endsWith("@g.us")) ContactType.GROUP else ContactType.CONTACT
+                ContactPickerItem(jid, resolvedName, sanitize(waName) ?: "", type, aliases)
+            } else {
+                buildItem(jid, sanitize(waName), aliases)
+            }
+        }
+
+        private fun tableExists(database: SQLiteDatabase, table: String): Boolean {
+            return try {
+                database.rawQuery(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                    arrayOf(table)
+                ).use { it.moveToFirst() }
+            } catch (throwable: Throwable) {
+                YukiLog.log(throwable)
+                false
+            }
+        }
+
+        private fun buildItem(
+            jid: String,
+            fallbackDisplayName: String?,
+            aliases: Set<String>
+        ): ContactPickerItem {
             val type = if (jid.endsWith("@g.us")) ContactType.GROUP else ContactType.CONTACT
-            val userJid = FMessageWpp.UserJid(jid)
 
             var displayName: String? = null
             var waName: String? = null
 
             try {
-                WaContactWpp.getWaContactFromJid(userJid)?.let { waContact ->
+                WaContactWpp.getWaContactFromJid(FMessageWpp.UserJid(jid))?.let { waContact ->
                     displayName = sanitize(waContact.displayName)
                     waName = sanitize(waContact.waName)
                 }
             } catch (throwable: Throwable) {
-                XposedBridge.log(throwable)
+                YukiLog.log(throwable)
             }
 
-            return ContactPickerItem(jid, displayName ?: "", waName ?: "", type)
+            val resolvedName = displayName
+                ?: sanitize(fallbackDisplayName)
+                ?: waName
+                ?: localPart(jid)
+
+            return ContactPickerItem(jid, resolvedName, waName ?: "", type, aliases)
         }
 
         private fun isSupportedPickerJid(jid: String): Boolean {

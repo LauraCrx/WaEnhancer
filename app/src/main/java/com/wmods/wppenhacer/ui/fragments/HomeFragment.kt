@@ -1,5 +1,6 @@
 package com.wmods.wppenhacer.ui.fragments
 
+import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -16,11 +17,13 @@ import android.view.ViewGroup
 import android.view.animation.AnimationUtils
 import android.widget.Toast
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.preference.PreferenceManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.highcapable.yukihookapi.YukiHook
 import com.wmods.wppenhacer.App
 import com.wmods.wppenhacer.BuildConfig
 import com.wmods.wppenhacer.R
@@ -46,7 +49,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
-import androidx.core.content.edit
 
 class HomeFragment : BaseFragment() {
 
@@ -79,6 +81,10 @@ class HomeFragment : BaseFragment() {
         _binding = FragmentHomeBinding.inflate(inflater, container, false)
 
         checkStateWpp(requireActivity())
+        // libxposed binds the framework service asynchronously, refresh once it connects.
+        YukiHook.Status.observeFrameworkService(viewLifecycleOwner.lifecycle) {
+            if (_binding != null) updateModuleStatus()
+        }
 
         binding.rebootBtn.setOnClickListener { view ->
             animateClick(view)
@@ -178,7 +184,8 @@ class HomeFragment : BaseFragment() {
         if (App.isOriginalPackage) binding.status3.visibility = View.VISIBLE
         binding.statusTitle3.setText(R.string.business_in_background)
         val version = intent.getStringExtra("VERSION")
-        val supportedList = context.resources.getStringArray(R.array.supported_versions_business).toList()
+        val supportedList =
+            context.resources.getStringArray(R.array.supported_versions_business).toList()
         if (isSupportedVersion(version, supportedList)) {
             binding.statusSummary3.text = getString(R.string.version_s, version)
             binding.status3.getChildAt(0).setBackgroundResource(R.drawable.gradient_success)
@@ -194,7 +201,8 @@ class HomeFragment : BaseFragment() {
     private fun receiverBroadcastWpp(context: Context, intent: Intent) {
         binding.statusTitle2.setText(R.string.whatsapp_in_background)
         val version = intent.getStringExtra("VERSION")
-        val supportedList = context.resources.getStringArray(R.array.supported_versions_wpp).toList()
+        val supportedList =
+            context.resources.getStringArray(R.array.supported_versions_wpp).toList()
 
         if (isSupportedVersion(version, supportedList)) {
             binding.statusSummary1.text = getString(R.string.version_s, version)
@@ -225,7 +233,7 @@ class HomeFragment : BaseFragment() {
         for ((key, value) in entries) {
             val type = JSONObject()
             var keyValue: Any? = value
-            if (keyValue is HashSet<*>) {
+            if (keyValue is Set<*>) {
                 keyValue = JSONArray(ArrayList(keyValue))
             }
             if (keyValue != null) {
@@ -247,7 +255,11 @@ class HomeFragment : BaseFragment() {
                         output.write(jsonObject.toString(4).toByteArray())
                     }
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(context, context.getString(R.string.configs_saved), Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.configs_saved),
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                 } catch (e: Exception) {
                     withContext(Dispatchers.Main) {
@@ -258,7 +270,52 @@ class HomeFragment : BaseFragment() {
         }
         val dateFormat = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US)
         val formattedDate = dateFormat.format(Date())
-        FilePicker.fileSalve.launch("wpp_enhacer_configs_$formattedDate.json")
+        try {
+            FilePicker.fileSalve.launch("wpp_enhacer_configs_$formattedDate.json")
+        } catch (e: ActivityNotFoundException) {
+            Toast.makeText(context, R.string.no_file_picker, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun parseConfigEntries(json: JSONObject): Map<String, Any> {
+        val result = LinkedHashMap<String, Any>()
+        val keys = json.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            var raw: Any? = json.opt(key)
+            var type: String? = null
+            if (raw is JSONObject) {
+                type = raw.optString("type").ifEmpty { null }
+                raw = raw.opt("value")
+            }
+            if (raw == null || raw == JSONObject.NULL) continue
+            val parsed = runCatching { convertConfigValue(type, raw) }.getOrNull() ?: continue
+            result[key] = parsed
+        }
+        return result
+    }
+
+    private fun convertConfigValue(type: String?, raw: Any): Any? {
+        if (raw is JSONArray) {
+            val set = LinkedHashSet<String>()
+            for (i in 0 until raw.length()) set.add(raw.getString(i))
+            return set
+        }
+        val text = raw.toString()
+        return when (type?.lowercase()) {
+            "boolean" -> if (raw is Boolean) raw else text.toBooleanStrictOrNull()
+            "integer", "int" -> (raw as? Number)?.toInt() ?: text.toIntOrNull()
+            "long" -> (raw as? Number)?.toLong() ?: text.toLongOrNull()
+            "float", "double" -> (raw as? Number)?.toFloat() ?: text.toFloatOrNull()
+            "string" -> text
+            else -> when (raw) {
+                is Boolean -> raw
+                is Int -> raw
+                is Long -> raw
+                is Number -> raw.toFloat()
+                else -> text
+            }
+        }
     }
 
     private fun importConfigs(context: Context) {
@@ -270,43 +327,27 @@ class HomeFragment : BaseFragment() {
                         val prefs = PreferenceManager.getDefaultSharedPreferences(context)
                         val jsonObject = JSONObject(data)
 
-                        prefs.edit {
+                        val entries = parseConfigEntries(jsonObject)
+                        prefs.edit(commit = true) {
                             prefs.all.keys.forEach { key -> remove(key) }
-
-                            val keys = jsonObject.keys()
-                            while (keys.hasNext()) {
-                                val keyName = keys.next()
-                                var value = jsonObject.get(keyName)
-                                var type = value.javaClass.simpleName
-                                if (value is JSONObject) {
-                                    type = value.getString("type")
-                                    value = value.get("value")
-                                }
-
-                                when (type) {
-                                    "JSONArray" -> {
-                                        val jsonArray = value as JSONArray
-                                        val hashSet = HashSet<String>()
-                                        for (i in 0 until jsonArray.length()) {
-                                            hashSet.add(jsonArray.getString(i))
-                                        }
-                                        putStringSet(keyName, hashSet)
-                                    }
-
-                                    "String" -> putString(keyName, value as String)
-                                    "Boolean", "boolean" -> putBoolean(keyName, value as Boolean)
-                                    "Integer", "int" -> putInt(keyName, value as Int)
-                                    "Long", "long" -> putLong(keyName, (value as Number).toLong())
-                                    "Double", "double", "Float", "float" -> putFloat(
-                                        keyName,
-                                        (value as Number).toFloat()
-                                    )
+                            entries.forEach { (key, value) ->
+                                when (value) {
+                                    is Boolean -> putBoolean(key, value)
+                                    is Int -> putInt(key, value)
+                                    is Long -> putLong(key, value)
+                                    is Float -> putFloat(key, value)
+                                    is String -> putString(key, value)
+                                    is Set<*> -> putStringSet(key, value.filterIsInstance<String>().toSet())
                                 }
                             }
                         }
                     }
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(context, context.getString(R.string.configs_imported), Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.configs_imported),
+                            Toast.LENGTH_SHORT
+                        ).show()
                         App.instance.restartApp(FeatureLoader.PACKAGE_WPP)
                         App.instance.restartApp(FeatureLoader.PACKAGE_BUSINESS)
                     }
@@ -318,14 +359,20 @@ class HomeFragment : BaseFragment() {
                 }
             }
         }
-        FilePicker.fileCapture.launch(arrayOf("application/json"))
+        try {
+            FilePicker.fileCapture.launch(arrayOf("application/json"))
+        } catch (e: ActivityNotFoundException) {
+            Toast.makeText(context, R.string.no_file_picker, Toast.LENGTH_LONG).show()
+        }
     }
 
-    private fun checkStateWpp(activity: FragmentActivity) {
-        if (App.instance.isXposedEnabled()) {
+    private fun updateModuleStatus() {
+        if (YukiHook.Status.isModuleActive) {
             binding.statusIcon.setImageResource(R.drawable.ic_round_check_circle_24)
             binding.statusTitle.setText(R.string.module_enabled)
-            binding.statusSummary.text = String.format(getString(R.string.version_s), BuildConfig.VERSION_NAME)
+            binding.statusSummary.text =
+                String.format(getString(R.string.version_s), BuildConfig.VERSION_NAME)
+            binding.statusSummary.visibility = View.VISIBLE
             binding.status.getChildAt(0).setBackgroundResource(R.drawable.gradient_success)
         } else {
             binding.statusIcon.setImageResource(R.drawable.ic_round_error_outline_24)
@@ -333,6 +380,10 @@ class HomeFragment : BaseFragment() {
             binding.status.getChildAt(0).setBackgroundResource(R.drawable.gradient_error)
             binding.statusSummary.visibility = View.GONE
         }
+    }
+
+    private fun checkStateWpp(activity: FragmentActivity) {
+        updateModuleStatus()
         if (isInstalled(FeatureLoader.PACKAGE_WPP) && App.isOriginalPackage) {
             disableWpp()
         } else {
@@ -346,12 +397,14 @@ class HomeFragment : BaseFragment() {
         binding.sdk.text = Build.VERSION.SDK_INT.toString()
         binding.modelName.text = Build.DEVICE
         if (App.isOriginalPackage) {
-            binding.listWpp.text = activity.resources.getStringArray(R.array.supported_versions_wpp).contentToString()
+            binding.listWpp.text =
+                activity.resources.getStringArray(R.array.supported_versions_wpp).contentToString()
         } else {
             binding.listWppTitle.visibility = View.GONE
             binding.listWpp.visibility = View.GONE
         }
-        binding.listBusiness.text = activity.resources.getStringArray(R.array.supported_versions_business).contentToString()
+        binding.listBusiness.text =
+            activity.resources.getStringArray(R.array.supported_versions_business).contentToString()
         updatePackageStatuses(activity)
     }
 
@@ -418,7 +471,14 @@ class HomeFragment : BaseFragment() {
     }
 
     private fun isSupportedVersion(version: String?, supportedVersions: List<String>): Boolean {
-        return version != null && supportedVersions.any { version.startsWith(it.replace(".xx", "")) }
+        return version != null && supportedVersions.any {
+            version.startsWith(
+                it.replace(
+                    ".xx",
+                    ""
+                )
+            )
+        }
     }
 
     private fun disableBusiness() {
@@ -475,9 +535,14 @@ class HomeFragment : BaseFragment() {
 
                     val parts = tagName.split("-")
                     val hash = if (parts.size > 1) parts[1].trim() else ""
-                    val isNewVersion = hash.isNotEmpty() && !BuildConfig.VERSION_NAME.lowercase().contains(hash.lowercase().trim())
+                    val isNewVersion = hash.isNotEmpty() && !BuildConfig.VERSION_NAME.lowercase()
+                        .contains(hash.lowercase().trim())
 
-                    updateCardState(success = true, isUpToDate = !isNewVersion, newVersion = tagName)
+                    updateCardState(
+                        success = true,
+                        isUpToDate = !isNewVersion,
+                        newVersion = tagName
+                    )
                 }
             } catch (_: UnknownHostException) {
                 updateCardState(success = false, isUpToDate = false, newVersion = null)
@@ -487,7 +552,11 @@ class HomeFragment : BaseFragment() {
         }
     }
 
-    private suspend fun updateCardState(success: Boolean, isUpToDate: Boolean, newVersion: String?) {
+    private suspend fun updateCardState(
+        success: Boolean,
+        isUpToDate: Boolean,
+        newVersion: String?
+    ) {
         withContext(Dispatchers.Main) {
             if (_binding == null || !isAdded) return@withContext
 
@@ -499,12 +568,14 @@ class HomeFragment : BaseFragment() {
             } else if (isUpToDate) {
                 binding.updateIcon.setImageResource(R.drawable.ic_round_check_circle_24)
                 binding.updateTitle.setText(R.string.up_to_date)
-                binding.updateSummary.text = getString(R.string.current_version_s, BuildConfig.VERSION_NAME)
+                binding.updateSummary.text =
+                    getString(R.string.current_version_s, BuildConfig.VERSION_NAME)
                 binding.updateCard.getChildAt(0).setBackgroundResource(R.drawable.gradient_success)
             } else {
                 binding.updateIcon.setImageResource(R.drawable.ic_round_update_24)
                 binding.updateTitle.setText(R.string.update_available)
-                binding.updateSummary.text = getString(R.string.update_available_summary, newVersion)
+                binding.updateSummary.text =
+                    getString(R.string.update_available_summary, newVersion)
                 binding.updateCard.getChildAt(0).setBackgroundResource(R.drawable.gradient_update)
             }
         }
@@ -528,9 +599,25 @@ class HomeFragment : BaseFragment() {
         val handler = Handler(Looper.getMainLooper())
         val queue = ArrayList<RootDiagnostics.LogEntry>()
 
+        val hmaBlockMessage = getString(R.string.diag_hma_disable)
         RootDiagnostics.runDiagnostics(context) { entry ->
             if (!isAdded) return@runDiagnostics
             queue.add(entry)
+            if (entry.message == hmaBlockMessage) {
+                handler.post { dialogBinding.fixHmaButton.visibility = View.VISIBLE }
+            }
+        }
+
+        dialogBinding.fixHmaButton.setOnClickListener {
+            MaterialAlertDialogBuilder(context)
+                .setTitle(R.string.diag_hma_fix_confirm_title)
+                .setMessage(R.string.diag_hma_fix_confirm_message)
+                .setPositiveButton(R.string.diag_hma_fix_confirm) { _, _ ->
+                    dialogBinding.fixHmaButton.isEnabled = false
+                    fixHideMyAppList(context, dialog, dialogBinding.fixHmaButton)
+                }
+                .setNegativeButton(android.R.string.cancel, null)
+                .show()
         }
 
         val poller = object : Runnable {
@@ -551,6 +638,40 @@ class HomeFragment : BaseFragment() {
             }
         }
         handler.postDelayed(poller, 120)
+    }
+
+    private fun fixHideMyAppList(
+        context: Context,
+        diagnosticsDialog: androidx.appcompat.app.AlertDialog,
+        button: View
+    ) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val result = RootDiagnostics.fixHideMyAppList(context) { }
+            withContext(Dispatchers.Main) {
+                if (_binding == null || !isAdded) return@withContext
+                button.isEnabled = true
+                when (result) {
+                    RootDiagnostics.FixResult.FIXED -> {
+                        diagnosticsDialog.dismiss()
+                        MaterialAlertDialogBuilder(context)
+                            .setTitle(R.string.diag_hma_fix_reboot_title)
+                            .setMessage(R.string.diag_hma_fix_reboot_message)
+                            .setCancelable(false)
+                            .setPositiveButton(R.string.diag_hma_fix_reboot_now) { _, _ ->
+                                RootDiagnostics.rebootDevice()
+                            }
+                            .setNegativeButton(R.string.diag_hma_fix_later, null)
+                            .show()
+                    }
+
+                    RootDiagnostics.FixResult.NOTHING_TO_FIX ->
+                        Toast.makeText(context, R.string.diag_hma_fix_nothing, Toast.LENGTH_LONG).show()
+
+                    RootDiagnostics.FixResult.FAILED ->
+                        Toast.makeText(context, R.string.diag_hma_fix_failed, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
     }
 
     override fun onDestroyView() {

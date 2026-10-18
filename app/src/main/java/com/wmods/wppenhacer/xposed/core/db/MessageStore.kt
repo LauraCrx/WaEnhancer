@@ -5,7 +5,7 @@ import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.text.TextUtils
 import com.wmods.wppenhacer.xposed.utils.Utils
-import de.robv.android.xposed.XposedBridge
+import com.wmods.wppenhacer.xposed.utils.YukiLog
 import java.io.File
 import java.util.stream.Collectors
 
@@ -54,7 +54,7 @@ class MessageStore private constructor() {
                     }
                 }
         } catch (e: Exception) {
-            XposedBridge.log(e)
+            YukiLog.log(e)
         }
         return message
     }
@@ -71,7 +71,7 @@ class MessageStore private constructor() {
                 }
             }
         } catch (e: Exception) {
-            XposedBridge.log(e)
+            YukiLog.log(e)
         }
         return ""
     }
@@ -88,7 +88,7 @@ class MessageStore private constructor() {
                 }
             }
         } catch (e: Exception) {
-            XposedBridge.log(e)
+            YukiLog.log(e)
         }
         return -1
     }
@@ -106,7 +106,7 @@ class MessageStore private constructor() {
                     }
                 }
         } catch (e: Exception) {
-            XposedBridge.log(e)
+            YukiLog.log(e)
         }
         return null
     }
@@ -123,7 +123,7 @@ class MessageStore private constructor() {
                 }
             }
         } catch (e: Exception) {
-            XposedBridge.log(e)
+            YukiLog.log(e)
         }
         return ""
     }
@@ -140,7 +140,7 @@ class MessageStore private constructor() {
                 }
             }
         } catch (e: Exception) {
-            XposedBridge.log(e)
+            YukiLog.log(e)
         }
         return message
     }
@@ -165,7 +165,7 @@ class MessageStore private constructor() {
                 }
             }
         } catch (e: Exception) {
-            XposedBridge.log(e)
+            YukiLog.log(e)
         }
 
         return list
@@ -188,7 +188,8 @@ class MessageStore private constructor() {
                 )
                 try {
                     writeDb.rawQuery("PRAGMA busy_timeout = 3000;", null).close()
-                } catch (ignored: Exception) {}
+                } catch (ignored: Exception) {
+                }
 
                 writeDb.execSQL(sql)
                 return
@@ -198,26 +199,28 @@ class MessageStore private constructor() {
                 ) {
                     retries++
                     if (retries >= maxRetries) {
-                        XposedBridge.log(e)
+                        YukiLog.log(e)
                     } else {
                         try {
                             Thread.sleep(retryDelayMs * retries)
-                        } catch (ignored: InterruptedException) {}
+                        } catch (ignored: InterruptedException) {
+                        }
                     }
                 } else {
-                    XposedBridge.log(e)
+                    YukiLog.log(e)
                     return
                 }
             } finally {
                 try {
                     writeDb?.close()
-                } catch (ignored: Exception) {}
+                } catch (ignored: Exception) {
+                }
             }
         }
     }
 
     fun storeMessageRead(messageId: String) {
-        XposedBridge.log("storeMessageRead: $messageId")
+        YukiLog.log("storeMessageRead: $messageId")
         executeWritableSQL("UPDATE message SET status = 1 WHERE key_id = \"$messageId\"")
     }
 
@@ -235,11 +238,31 @@ class MessageStore private constructor() {
                 result = cursor.getInt(cursor.getColumnIndexOrThrow("status")) == 1
             }
         } catch (e: Exception) {
-            XposedBridge.log(e)
+            YukiLog.log(e)
         } finally {
             cursor?.close()
         }
         return result
+    }
+
+    private var writableDatabase: SQLiteDatabase? = null
+
+    /**
+     * Separate read-write connection, only meant for restoring deleted messages. The default
+     * connection stays read-only so the other features can't write to msgstore by accident.
+     */
+    @Synchronized
+    fun getWritableDatabase(): SQLiteDatabase? {
+        writableDatabase?.takeIf { it.isOpen }?.let { return it }
+        val dbFile = File(Utils.getAccountDataDir(), "/databases/msgstore.db")
+        if (!dbFile.exists()) return null
+        return try {
+            SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READWRITE)
+                .also { writableDatabase = it }
+        } catch (e: Exception) {
+            YukiLog.log(e)
+            null
+        }
     }
 
     fun getDatabase(): SQLiteDatabase? {
@@ -282,7 +305,7 @@ class MessageStore private constructor() {
                 }
             }
         } catch (e: Exception) {
-            XposedBridge.log(e)
+            YukiLog.log(e)
         }
         return null
     }
@@ -308,7 +331,7 @@ class MessageStore private constructor() {
                     SQLiteDatabase.OPEN_READWRITE
                 )
             } catch (e: Exception) {
-                XposedBridge.log(e)
+                YukiLog.log(e)
                 null
             }
         } else {
@@ -335,7 +358,7 @@ class MessageStore private constructor() {
                         }
                     }
                 } catch (e: Exception) {
-                    XposedBridge.log(e)
+                    YukiLog.log(e)
                 }
 
                 if (statusRowId != null) {
@@ -358,7 +381,7 @@ class MessageStore private constructor() {
                             }
                         }
                     } catch (e: Exception) {
-                        XposedBridge.log(e)
+                        YukiLog.log(e)
                     }
 
                     if (mediaFilePath.isNullOrEmpty()) {
@@ -371,19 +394,24 @@ class MessageStore private constructor() {
                                 arrayOf(statusRowId.toString())
                             ).use { cursor ->
                                 if (cursor.moveToFirst()) {
-                                    mediaFilePath = if (cursor.isNull(0)) null else cursor.getString(0)
+                                    mediaFilePath =
+                                        if (cursor.isNull(0)) null else cursor.getString(0)
                                 }
                             }
                         } catch (e: Exception) {
-                            XposedBridge.log(e)
+                            YukiLog.log(e)
                         }
                     }
 
                     var deleted = false
                     try {
-                        deleted = statusDbInstance.delete("status", "row_id=?", arrayOf(statusRowId.toString())) > 0
+                        deleted = statusDbInstance.delete(
+                            "status",
+                            "row_id=?",
+                            arrayOf(statusRowId.toString())
+                        ) > 0
                     } catch (e: Exception) {
-                        XposedBridge.log(e)
+                        YukiLog.log(e)
                     }
 
                     if (deleted) {
@@ -395,7 +423,7 @@ class MessageStore private constructor() {
                 try {
                     statusDbInstance.close()
                 } catch (e: Exception) {
-                    XposedBridge.log(e)
+                    YukiLog.log(e)
                 }
             }
         }
@@ -409,7 +437,7 @@ class MessageStore private constructor() {
                     SQLiteDatabase.OPEN_READWRITE
                 )
             } catch (e: Exception) {
-                XposedBridge.log(e)
+                YukiLog.log(e)
                 null
             }
         } else {
@@ -438,7 +466,7 @@ class MessageStore private constructor() {
                     }
                 }
             } catch (e: Exception) {
-                XposedBridge.log(e)
+                YukiLog.log(e)
             }
 
             if (messageRowId == null || senderJidRowId == null || chatRowId == null) {
@@ -455,13 +483,13 @@ class MessageStore private constructor() {
                     }
                 }
             } catch (e: Exception) {
-                XposedBridge.log(e)
+                YukiLog.log(e)
             }
 
             try {
                 deleted = writeDb.delete("message", "_id=?", arrayOf(messageRowId.toString())) > 0
             } catch (e: Exception) {
-                XposedBridge.log(e)
+                YukiLog.log(e)
                 deleted = false
             }
 
@@ -472,7 +500,7 @@ class MessageStore private constructor() {
             try {
                 writeDb.close()
             } catch (e: Exception) {
-                XposedBridge.log(e)
+                YukiLog.log(e)
             }
         }
 
@@ -518,7 +546,7 @@ class MessageStore private constructor() {
                 }
             }
         } catch (e: Exception) {
-            XposedBridge.log(e)
+            YukiLog.log(e)
         }
 
         if (totalCount == 0) {
